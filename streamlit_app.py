@@ -923,17 +923,42 @@ with main_tabs[1]:
             st.vega_lite_chart(
                 rev_my,
                 {
-                    "mark": "line",
-                    "encoding": {
-                        "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
-                        "y": {"field": "price", "type": "quantitative", "title": "Έσοδα"},
-                        "color": {"field": "year", "type": "nominal", "title": "Έτος"},
-                        "tooltip": [
-                            {"field": "year", "type": "ordinal"},
-                            {"field": "month", "type": "ordinal"},
-                            {"field": "price", "type": "quantitative", "title": "Έσοδα"}
-                        ]
-                    },
+                    "layer": [
+                        {
+                            "mark": "line",
+                            "encoding": {
+                                "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
+                                "y": {"field": "price", "type": "quantitative", "title": "Έσοδα"},
+                                "color": {"field": "year", "type": "nominal", "title": "Έτος"}
+                            }
+                        },
+                        {
+                            "mark": {"type": "point"},
+                            "encoding": {
+                                "x": {"field": "month", "type": "ordinal", "sort": MONTHS},
+                                "y": {"field": "price", "type": "quantitative"},
+                                "color": {"field": "year", "type": "nominal"}
+                            }
+                        },
+                        {
+                            "params": [{"name": "pick", "select": {"type": "point", "fields": ["month"], "on": "click", "nearest": True, "clear": "dblclick"}}],
+                            "mark": {"type": "rule", "strokeDash": [4,4]},
+                            "transform": [{"filter": {"param": "pick"}}],
+                            "encoding": {
+                                "x": {"field": "month", "type": "ordinal", "sort": MONTHS}
+                            }
+                        },
+                        {
+                            "mark": {"type": "text", "dy": -8},
+                            "transform": [{"filter": {"param": "pick"}}],
+                            "encoding": {
+                                "x": {"field": "month", "type": "ordinal", "sort": MONTHS},
+                                "y": {"field": "price", "type": "quantitative"},
+                                "color": {"field": "year", "type": "nominal"},
+                                "text": {"field": "price", "type": "quantitative", "format": ",.0f"}
+                            }
+                        }
+                    ],
                     "width": "container",
                     "height": 260
                 },
@@ -1016,13 +1041,7 @@ with main_tabs[1]:
                                 "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
                                 "y": {"field": "occupancy", "type": "quantitative", "title": "% Πληρότητα"},
                                 "color": {"field": "floor", "type": "nominal", "title": "Όροφος"},
-                                "column": {"field": "year", "type": "ordinal", "title": "Έτος"},
-                                "tooltip": [
-                                    {"field": "year", "type": "ordinal"},
-                                    {"field": "month", "type": "ordinal"},
-                                    {"field": "floor", "type": "nominal"},
-                                    {"field": "occupancy", "type": "quantitative", "title": "%"}
-                                ]
+                                "column": {"field": "year", "type": "ordinal", "title": "Έτος"}
                             }
                         },
                         {
@@ -1032,6 +1051,26 @@ with main_tabs[1]:
                                 "y": {"field": "occupancy", "type": "quantitative"},
                                 "color": {"field": "floor", "type": "nominal"},
                                 "column": {"field": "year", "type": "ordinal"}
+                            }
+                        },
+                        {
+                            "params": [{"name": "pick2", "select": {"type": "point", "fields": ["month"], "on": "click", "nearest": True, "clear": "dblclick"}}],
+                            "mark": {"type": "rule", "strokeDash": [4,4]},
+                            "transform": [{"filter": {"param": "pick2"}}],
+                            "encoding": {
+                                "x": {"field": "month", "type": "ordinal", "sort": MONTHS},
+                                "column": {"field": "year", "type": "ordinal"}
+                            }
+                        },
+                        {
+                            "mark": {"type": "text", "dy": -8},
+                            "transform": [{"filter": {"param": "pick2"}}],
+                            "encoding": {
+                                "x": {"field": "month", "type": "ordinal", "sort": MONTHS},
+                                "y": {"field": "occupancy", "type": "quantitative"},
+                                "color": {"field": "floor", "type": "nominal"},
+                                "column": {"field": "year", "type": "ordinal"},
+                                "text": {"field": "occupancy", "type": "quantitative", "format": ".1f"}
                             }
                         }
                     ],
