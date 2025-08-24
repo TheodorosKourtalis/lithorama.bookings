@@ -942,22 +942,29 @@ with main_tabs[1]:
             explain("Σύγκριση ίδιου μήνα μεταξύ ετών — βλέπουμε αν π.χ. ο Αύγουστος βελτιώθηκε σε σχέση με πέρσι.")
 
         st.subheader("Εβδομαδιαίο μοτίβο (κρατήσεις ανά ημέρα εβδομάδας)")
-        # Προετοιμασία ημερομηνίας & weekday
-        # Χάρτης GR μήνα -> αριθμός
+        # Προετοιμασία ημερομηνίας & weekday (χωρίς system locale)
         fdf_dates = fdf.copy()
         fdf_dates["month_num"] = fdf_dates["month"].map(MONTH_NUM)
-        # Κατασκευή ημερομηνίας (κάποια NaN θα γίνουν NaT και θα αγνοηθούν)
-        fdf_dates["date"] = pd.to_datetime(dict(year=fdf_dates["year"], month=fdf_dates["month_num"], day=fdf_dates["day"]), errors="coerce")
+        fdf_dates["date"] = pd.to_datetime(
+            dict(year=fdf_dates["year"], month=fdf_dates["month_num"], day=fdf_dates["day"]),
+            errors="coerce",
+        )
         fdf_dates = fdf_dates.dropna(subset=["date"])  # κρατάμε μόνο έγκυρες
         if not fdf_dates.empty:
-            fdf_dates["weekday"] = fdf_dates["date"].dt.day_name(locale="el_GR") if hasattr(fdf_dates["date"].dt, "day_name") else fdf_dates["date"].dt.day_name()
-            # Τάξη ημερών (Δευτέρα..Κυριακή) – fallback στα Αγγλικά αν χρειάζεται
+            weekday_map_gr = {
+                0: "Δευτέρα",
+                1: "Τρίτη",
+                2: "Τετάρτη",
+                3: "Πέμπτη",
+                4: "Παρασκευή",
+                5: "Σάββατο",
+                6: "Κυριακή",
+            }
+            fdf_dates["weekday_idx"] = fdf_dates["date"].dt.weekday
+            fdf_dates["weekday"] = fdf_dates["weekday_idx"].map(weekday_map_gr)
             weekday_order = [
-                "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+                "Δευτέρα", "Τρίτη", "Τετάρτη", "Πέμπτη", "Παρασκευή", "Σάββατο", "Κυριακή"
             ]
-            # Αν είναι ελληνικά, φτιάξε GR σειρά
-            if fdf_dates["weekday"].str.contains("Δευ", na=False).any():
-                weekday_order = ["Δευτέρα", "Τρίτη", "Τετάρτη", "Πέμπτη", "Παρασκευή", "Σάββατο", "Κυριακή"]
             wdf = fdf_dates.groupby(["weekday"]).size().reset_index(name="κρατήσεις")
             wdf["weekday"] = pd.Categorical(wdf["weekday"], categories=weekday_order, ordered=True)
             st.bar_chart(wdf.set_index("weekday"))
