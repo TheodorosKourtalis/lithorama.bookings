@@ -560,9 +560,14 @@ main_tabs = st.tabs(["Καταχώρηση", "Στατιστικά"])  # δύο 
 
 with main_tabs[0]:
     # Reload grid whenever the selected year changes
-    current_year = st.radio("Έτος καταχώρησης", [2022, 2023, 2024, 2025], index=2, horizontal=True)
-    # Sync unified year for the whole app (sidebar reads this)
-    st.session_state["selected_year"] = int(current_year)
+    current_year = st.radio(
+        "Έτος καταχώρησης",
+        [2022, 2023, 2024, 2025],
+        index=[2022, 2023, 2024, 2025].index(int(st.session_state.get("selected_year", 2024))),
+        horizontal=True,
+        key="selected_year",
+    )
+    current_year = int(st.session_state["selected_year"])  # ensure we use the unified state
     session_key = f"grid_df::{current_year}"
     if session_key not in st.session_state:
         st.session_state[session_key] = load_grid_df_for_year(int(current_year))
