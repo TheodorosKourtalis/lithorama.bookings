@@ -88,6 +88,13 @@ h1.title {
   font-weight: 800; letter-spacing: -.2px; color: inherit; /* χωρίς gradients */
 }
 .small-muted {color: #6b7280; font-size: .9rem}
+
+/* Added for aligned headers and responsive */
+.col-header { text-align:center; font-weight:600; }
+.day-cell { text-align:center; font-weight:600; }
+@media (max-width: 768px) {
+  .small-muted { font-size: .95rem; }
+}
 </style>
 """
 
@@ -288,69 +295,129 @@ with st.sidebar:
     # Προαιρετικό: export κουμπί θα το βάλουμε κάτω, μετά την Αποθήκευση.
 
 # ---------- Πίνακας (HTML‑styled) με φόρμα αποθήκευσης ----------
-if "grid_df" not in st.session_state:
-    st.session_state["grid_df"] = load_grid_df()
+main_tabs = st.tabs(["Καταχώρηση", "Στατιστικά"])  # δύο σελίδες: εισαγωγή & στατιστικά
 
-st.markdown(
-    """
-<div class="card">
-  <h3>🗂️ Πίνακας Κρατήσεων (Μήνας × Όροφος: Ισόγειο/Α/Β)</h3>
-  <div class="small-muted">Οι αλλαγές καταχωρούνται όταν πατήσεις <strong>Αποθήκευση</strong> στο τέλος.</div>
-</div>
-""",
-    unsafe_allow_html=True,
-)
+with main_tabs[0]:
+    if "grid_df" not in st.session_state:
+        st.session_state["grid_df"] = load_grid_df()
 
-# Βοηθητική για labels
-def _label(month: str, floor: str, day: int) -> str:
-    return f"{month} {floor} — {day}"
+    st.markdown(
+        """
+    <div class="card">
+      <h3>🗂️ Πίνακας Κρατήσεων (Μήνας × Όροφος: Ισόγειο/Α/Β)</h3>
+      <div class="small-muted">Οι αλλαγές καταχωρούνται όταν πατήσεις <strong>Αποθήκευση</strong> στο τέλος.</div>
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
 
-with st.form("booking_form", clear_on_submit=False):
-    tabs = st.tabs(MONTHS)
-    # Θα συλλέξουμε τις τιμές εδώ
-    new_values = {}
-    for i, m in enumerate(MONTHS):
-        with tabs[i]:
-            st.markdown(f"### {m}")
-            # HTML‑styled table header
-            st.markdown(
-                "<div style='display:grid;grid-template-columns:80px 1fr 1fr 1fr;gap:6px;font-weight:600;'>"
-                "<div>Ημέρα</div><div>Ισόγειο</div><div>Α</div><div>Β</div>"
-                "</div>",
-                unsafe_allow_html=True,
+    # Βοηθητική για labels
+    def _label(month: str, floor: str, day: int) -> str:
+        return f"{month} {floor} — {day}"
+
+    with st.form("booking_form", clear_on_submit=False):
+        tabs = st.tabs(MONTHS)
+        # Θα συλλέξουμε τις τιμές εδώ
+        new_values = {}
+        for i, m in enumerate(MONTHS):
+            with tabs[i]:
+                st.markdown(f"### {m}")
+                # Headers aligned with the same column layout (mobile friendly)
+                header_cols = st.columns([0.7, 1, 1, 1], gap="small")
+                header_cols[0].markdown("<div class='col-header'>Ημέρα</div>", unsafe_allow_html=True)
+                header_cols[1].markdown("<div class='col-header'>Ισόγειο</div>", unsafe_allow_html=True)
+                header_cols[2].markdown("<div class='col-header'>Α</div>", unsafe_allow_html=True)
+                header_cols[3].markdown("<div class='col-header'>Β</div>", unsafe_allow_html=True)
+
+                for d in DAYS:
+                    cols = st.columns([0.7, 1, 1, 1], gap="small")
+                    cols[0].markdown(f"<div class='day-cell'>{d}</div>", unsafe_allow_html=True)
+                    for j, f in enumerate(FLOORS_DISPLAY, start=1):
+                        colname = f"{m} {f}"
+                        initial = st.session_state["grid_df"].at[d, colname] if (d in st.session_state["grid_df"].index and colname in st.session_state["grid_df"].columns) else ""
+                        key = f"cell::{m}::{f}::{d}"
+                        val = cols[j].text_input(_label(m, f, d), value=str(initial or ""), key=key, label_visibility="collapsed")
+                        new_values[(d, colname)] = val
+        submitted = st.form_submit_button("💾 Αποθήκευση", type="primary")
+
+    # Αν πατήθηκε Αποθήκευση, αναδομούμε DataFrame και γράφουμε στη ΒΔ
+    if submitted:
+        updated = st.session_state["grid_df"].copy()
+        for (d, colname), v in new_values.items():
+            if colname in updated.columns and d in updated.index:
+                updated.at[d, colname] = str(v or "")
+        st.session_state["grid_df"] = updated.astype("string").fillna("")
+        ok, err = save_grid_df(st.session_state["grid_df"])
+        if ok:
+            st.success("Αποθηκεύτηκαν οι κρατήσεις.")
+        else:
+            st.error(f"Σφάλμα αποθήκευσης: {err}")
+
+        # Προσφέρουμε export μετά την επιτυχή αποθήκευση
+        if ok:
+            with get_conn() as c:
+                bookings = pd.read_sql_query("SELECT year, floor, month, day, price FROM bookings", c)
+            csv_bytes = bookings.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "⬇️ Λήψη bookings.csv",
+                data=csv_bytes,
+                file_name="bookings.csv",
+                mime="text/csv",
             )
-            for d in DAYS:
-                cols = st.columns([0.7, 1, 1, 1], gap="small")
-                cols[0].markdown(f"**{d}**")
-                for j, f in enumerate(FLOORS_DISPLAY, start=1):
-                    colname = f"{m} {f}"
-                    initial = st.session_state["grid_df"].at[d, colname] if (d in st.session_state["grid_df"].index and colname in st.session_state["grid_df"].columns) else ""
-                    key = f"cell::{m}::{f}::{d}"
-                    val = cols[j].text_input(_label(m, f, d), value=str(initial or ""), key=key, label_visibility="collapsed")
-                    new_values[(d, colname)] = val
-    submitted = st.form_submit_button("💾 Αποθήκευση", type="primary")
 
-# Αν πατήθηκε Αποθήκευση, αναδομούμε DataFrame και γράφουμε στη ΒΔ
-if submitted:
-    updated = st.session_state["grid_df"].copy()
-    for (d, colname), v in new_values.items():
-        if colname in updated.columns and d in updated.index:
-            updated.at[d, colname] = str(v or "")
-    st.session_state["grid_df"] = updated.astype("string").fillna("")
-    ok, err = save_grid_df(st.session_state["grid_df"])
-    if ok:
-        st.success("Αποθηκεύτηκαν οι κρατήσεις.")
-    else:
-        st.error(f"Σφάλμα αποθήκευσης: {err}")
-
-    # Προσφέρουμε export μετά την επιτυχή αποθήκευση
-    if ok:
+# ---------- Στατιστικά (δεύτερη σελίδα) ----------
+with main_tabs[1]:
+    st.markdown(
+        """
+    <div class="card">
+      <h3>📈 Στατιστικά Κρατήσεων</h3>
+      <div class="small-muted">Τα στατιστικά βασίζονται στα δεδομένα που έχουν αποθηκευτεί στη βάση.</div>
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
+    try:
         with get_conn() as c:
-            bookings = pd.read_sql_query("SELECT year, floor, month, day, price FROM bookings", c)
-        csv_bytes = bookings.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "⬇️ Λήψη bookings.csv",
-            data=csv_bytes,
-            file_name="bookings.csv",
-            mime="text/csv",
-        )
+            stats_df = pd.read_sql_query("SELECT year, floor, month, day, price FROM bookings", c)
+    except Exception as e:
+        stats_df = pd.DataFrame(columns=["year", "floor", "month", "day", "price"])  # κενό/ασφαλές
+        st.error(f"Δεν ήταν δυνατή η ανάγνωση στατιστικών: {e}")
+
+    if stats_df.empty:
+        st.info("Δεν υπάρχουν ακόμη αποθηκευμένες κρατήσεις.")
+    else:
+        per_year = stats_df.groupby("year").size().reset_index(name="κρατήσεις")
+        per_year_floor = stats_df.groupby(["year", "floor"]).size().reset_index(name="κρατήσεις")
+
+        if stats_df["price"].notna().any():
+            price_info = (
+                stats_df.dropna(subset=["price"]).groupby("year")["price"].mean().reset_index()
+                .rename(columns={"price": "μέση_τιμή"})
+            )
+        else:
+            price_info = pd.DataFrame(columns=["year", "μέση_τιμή"])  # κενό
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            total_all = int(per_year["κρατήσεις"].sum()) if not per_year.empty else 0
+            st.metric("Σύνολο κρατήσεων", f"{total_all}")
+        with col2:
+            latest_year = int(per_year["year"].max()) if not per_year.empty else None
+            st.metric("Τελευταίο έτος", f"{latest_year}" if latest_year else "—")
+        with col3:
+            if not price_info.empty:
+                last_y = int(price_info["year"].max())
+                mean_p = float(price_info.loc[price_info["year"] == last_y, "μέση_τιμή"].iloc[0])
+                st.metric(f"Μέση τιμή ({last_y})", f"{mean_p:.2f}")
+            else:
+                st.metric("Μέση τιμή", "—")
+
+        st.subheader("Ανά έτος")
+        st.dataframe(per_year, use_container_width=True)
+
+        st.subheader("Ανά έτος & όροφο")
+        st.dataframe(per_year_floor, use_container_width=True)
+
+        if not price_info.empty:
+            st.subheader("Μέση τιμή ανά έτος")
+            st.dataframe(price_info, use_container_width=True)
