@@ -1261,31 +1261,81 @@ with main_tabs[1]:
         month_sel = st.selectbox("Μήνας", MONTHS, index=MONTHS.index("Αύγουστος") if "Αύγουστος" in MONTHS else 0, key="yoy_month_sel")
         curm = fdf[fdf["month"] == month_sel]
         if not curm.empty:
-            # Τρέχον και προηγούμενο έτος διαθέσιμα;
             ys = sorted(curm["year"].dropna().astype(int).unique())
             if len(ys) >= 2:
-                y_now, y_prev = ys[-1], ys[-2]
-                rev_now = float(curm[curm["year"] == y_now]["price"].sum()) if curm["price"].notna().any() else 0.0
-                rev_prev = float(curm[curm["year"] == y_prev]["price"].sum()) if curm["price"].notna().any() else 0.0
-                # Occupancy proxy: μοναδικές ημέρες με τουλ. μία κράτηση (σε οποιονδήποτε όροφο)
-                occ_now = int(curm[curm["year"] == y_now]["day"].dropna().nunique())
-                occ_prev = int(curm[curm["year"] == y_prev]["day"].dropna().nunique())
-                med_now = float(curm[(curm["year"] == y_now) & curm["price"].notna()]["price"].median()) if curm["price"].notna().any() else 0.0
-                med_prev = float(curm[(curm["year"] == y_prev) & curm["price"].notna()]["price"].median()) if curm["price"].notna().any() else 0.0
-                m1, m2, m3 = st.columns(3)
-                with m1:
-                    delta_rev = rev_now - rev_prev
-                    st.metric("Έσοδα (YoY)", f"{rev_now:,.0f}", delta=f"{delta_rev:+.0f}")
-                with m2:
-                    delta_occ = occ_now - occ_prev
-                    st.metric("Πληρότητα (ημέρες με ≥1 κράτηση)", f"{occ_now}", delta=f"{delta_occ:+d}")
-                with m3:
-                    if med_prev != 0:
-                        pct = ((med_now - med_prev)/med_prev)*100
-                        st.metric("Διάμεση τιμή (YoY)", f"{med_now:.0f}", delta=f"{pct:+.1f}%")
-                    else:
-                        st.metric("Διάμεση τιμή (YoY)", f"{med_now:.0f}")
-                explain("Σύντομη σύγκριση με πέρσι: έσοδα, πληρότητα (ημέρες με ≥1 κράτηση) και διάμεση τιμή.")
+                # Επιλογή ζεύγους ετών προς σύγκριση (παραμετροποιήσιμο)
+                y_idx_latest = len(ys) - 1
+                y_idx_prev = len(ys) - 2
+                colA, colB = st.columns(2)
+                with colA:
+                    y_now = st.selectbox("Έτος A", ys, index=y_idx_latest, key="yoy_year_now")
+                with colB:
+                    y_prev = st.selectbox("Έτος B (βάση)", ys, index=y_idx_prev, key="yoy_year_prev")
+                if y_now == y_prev:
+                    st.warning("Επίλεξε διαφορετικά έτη για σύγκριση.")
+                else:
+                    # Metrics για το επιλεγμένο ζεύγος ετών
+                    rev_now = float(curm[curm["year"] == y_now]["price"].sum()) if curm["price"].notna().any() else 0.0
+                    rev_prev = float(curm[curm["year"] == y_prev]["price"].sum()) if curm["price"].notna().any() else 0.0
+                    occ_now = int(curm[curm["year"] == y_now]["day"].dropna().nunique())
+                    occ_prev = int(curm[curm["year"] == y_prev]["day"].dropna().nunique())
+                    med_now = float(curm[(curm["year"] == y_now) & curm["price"].notna()]["price"].median()) if curm["price"].notna().any() else 0.0
+                    med_prev = float(curm[(curm["year"] == y_prev) & curm["price"].notna()]["price"].median()) if curm["price"].notna().any() else 0.0
+                    m1, m2, m3 = st.columns(3)
+                    with m1:
+                        delta_rev = rev_now - rev_prev
+                        st.metric(f"Έσοδα ({y_now} vs {y_prev})", f"{rev_now:,.0f}", delta=f"{delta_rev:+.0f}")
+                    with m2:
+                        delta_occ = occ_now - occ_prev
+                        st.metric(f"Πληρότητα ημέρες ({y_now} vs {y_prev})", f"{occ_now}", delta=f"{delta_occ:+d}")
+                    with m3:
+                        if med_prev != 0:
+                            pct = ((med_now - med_prev)/med_prev)*100
+                            st.metric(f"Διάμεση τιμή ({y_now} vs {y_prev})", f"{med_now:.0f}", delta=f"{pct:+.1f}%")
+                        else:
+                            st.metric(f"Διάμεση τιμή ({y_now} vs {y_prev})", f"{med_now:.0f}")
+                    explain("Σύντομη σύγκριση για τον επιλεγμένο μήνα ανάμεσα στα έτη που διάλεξες.")
+
+                # Επιλογή να δούμε ΟΛΑ τα YoY ζεύγη για τον μήνα
+                show_all = st.checkbox("Δείξε όλα τα YoY ζεύγη για τον μήνα", value=False, key="yoy_show_all_month")
+                if show_all:
+                    # Συγκεντρώνουμε ανά έτος τα KPIs και υπολογίζουμε Δ vs προηγούμενο έτος
+                    tmp = []
+                    for y in ys:
+                        sub = curm[curm["year"] == y]
+                        rev = float(sub["price"].sum()) if sub["price"].notna().any() else 0.0
+                        occ = int(sub["day"].dropna().nunique())
+                        med = float(sub[sub["price"].notna()]["price"].median()) if sub["price"].notna().any() else 0.0
+                        tmp.append({"year": y, "revenue": rev, "occupancy_days": occ, "median_price": med})
+                    yoy_tbl = pd.DataFrame(tmp).sort_values("year").reset_index(drop=True)
+                    # Deltas vs previous
+                    yoy_tbl["rev_delta"] = yoy_tbl["revenue"].diff()
+                    yoy_tbl["occ_delta"] = yoy_tbl["occupancy_days"].diff()
+                    yoy_tbl["median_delta_pct"] = yoy_tbl["median_price"].pct_change() * 100
+                    st.write(f"**YoY πίνακας για {month_sel}**")
+                    st.dataframe(yoy_tbl, use_container_width=True)
+                    # Γράφημα διαφορών εσόδων
+                    if len(yoy_tbl) >= 2:
+                        st.vega_lite_chart(
+                            yoy_tbl.assign(year_str=yoy_tbl["year"].astype(str)),
+                            {
+                                "mark": "bar",
+                                "encoding": {
+                                    "x": {"field": "year_str", "type": "ordinal", "title": "Έτος"},
+                                    "y": {"field": "rev_delta", "type": "quantitative", "title": "Δ έσοδα vs προηγούμενο"},
+                                    "tooltip": [
+                                        {"field": "year", "type": "ordinal"},
+                                        {"field": "rev_delta", "type": "quantitative", "title": "Δ έσοδα"},
+                                        {"field": "occ_delta", "type": "quantitative", "title": "Δ ημέρες"},
+                                        {"field": "median_delta_pct", "type": "quantitative", "title": "Δ διάμεση %"}
+                                    ]
+                                },
+                                "width": "container",
+                                "height": 220
+                            },
+                            use_container_width=True,
+                        )
+                        explain("Όλες οι ετήσιες μεταβολές για τον μήνα — έσοδα, ημέρες με κράτηση και διάμεση τιμή.")
             else:
                 st.info("Χρειάζονται τουλάχιστον δύο έτη για YoY στον επιλεγμένο μήνα.")
         else:
