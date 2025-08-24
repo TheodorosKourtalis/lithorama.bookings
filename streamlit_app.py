@@ -74,22 +74,10 @@ GRID_COLUMNS = [f"{m} {f}" for m in MONTHS for f in FLOORS_DISPLAY]
 
 DATA_DIR = Path(".")
 BOOKINGS_XLSX = DATA_DIR / "bookings.xlsx"
-BOOKINGS_CSV = DATA_DIR / "bookings.csv"
 
-# Helper to load bookings from CSV (prefer) or XLSX (fallback)
 def load_bookings_df() -> pd.DataFrame:
-    """Load combined bookings for statistics. Prefer CSV; fallback to XLSX; else empty."""
+    """Load combined bookings for statistics from bookings.xlsx only."""
     cols = ["year", "floor", "month", "day", "price"]
-    if BOOKINGS_CSV.exists():
-        try:
-            df = pd.read_csv(BOOKINGS_CSV)
-            # basic column normalization
-            for c in cols:
-                if c not in df.columns:
-                    df[c] = pd.Series(dtype="float64" if c in ("year","day","price") else "string")
-            return df[cols]
-        except Exception:
-            pass
     if BOOKINGS_XLSX.exists():
         try:
             df = pd.read_excel(BOOKINGS_XLSX, sheet_name="bookings")
@@ -649,28 +637,16 @@ with main_tabs[0]:
             st.error(f"Σφάλμα αποθήκευσης: {err}")
 
         # Note for per-month files (above download buttons)
-        st.info("Για το επιλεγμένο έτος δημιουργήθηκαν/ενημερώθηκαν αρχεία ανά μήνα: dev_{YYYY}_{MONTH}.xlsx. Το bookings.xlsx είναι ο ενιαίος πίνακας για όλα τα έτη/μήνες. Τα στατιστικά διαβάζουν από το bookings.csv")
+        st.info("Για το επιλεγμένο έτος δημιουργήθηκαν/ενημερώθηκαν αρχεία ανά μήνα: dev_{YYYY}_{MONTH}.xlsx. Το bookings.xlsx είναι ο ενιαίος πίνακας για όλα τα έτη/μήνες και πάνω σε αυτό βασίζονται τα Στατιστικά.")
 
         # Προσφέρουμε export μετά την επιτυχή αποθήκευση
-        if ok:
-            # Αν υπάρχει ήδη έτοιμο CSV, δώσ' το απευθείας· αλλιώς φτιάξ' το από το XLSX
-            if BOOKINGS_CSV.exists():
-                st.download_button(
-                    "⬇️ Λήψη bookings.csv",
-                    data=open(BOOKINGS_CSV, "rb").read(),
-                    file_name="bookings.csv",
-                    mime="text/csv",
-                )
-            elif BOOKINGS_XLSX.exists():
-                _tmp_df = pd.read_excel(BOOKINGS_XLSX, sheet_name="bookings")
-                csv_bytes = _tmp_df.to_csv(index=False).encode("utf-8-sig")
-                st.download_button(
-                    "⬇️ Λήψη bookings.csv",
-                    data=csv_bytes,
-                    file_name="bookings.csv",
-                    mime="text/csv",
-                )
-            st.caption("Τα στατιστικά βασίζονται στο bookings.csv.")
+        if ok and BOOKINGS_XLSX.exists():
+            st.download_button(
+                "⬇️ Λήψη bookings.xlsx",
+                data=open(BOOKINGS_XLSX, "rb").read(),
+                file_name="bookings.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
 # ---------- Στατιστικά (δεύτερη σελίδα) ----------
 with main_tabs[1]:
@@ -678,14 +654,14 @@ with main_tabs[1]:
         """
     <div class="card">
       <h3>📈 Στατιστικά Κρατήσεων</h3>
-      <div class="small-muted">Τα στατιστικά βασίζονται στα δεδομένα που έχουν αποθηκευτεί στο bookings.csv.</div>
+      <div class="small-muted">Τα στατιστικά βασίζονται στα δεδομένα που έχουν αποθηκευτεί στο bookings.xlsx.</div>
     </div>
     """,
         unsafe_allow_html=True,
     )
     stats_df = load_bookings_df()
     if stats_df.empty:
-        st.info("Δεν υπάρχουν ακόμη αποθηκευμένες κρατήσεις (bookings.csv).")
+        st.info("Δεν υπάρχουν ακόμη αποθηκευμένες κρατήσεις (bookings.xlsx).")
     else:
         # Type safety / coercion
         stats_df["year"] = pd.to_numeric(stats_df["year"], errors="coerce").astype("Int64")
