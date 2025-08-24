@@ -142,6 +142,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Unified year selection shared across the app
+if "selected_year" not in st.session_state:
+    st.session_state["selected_year"] = 2024  # default
+
 # ---------- Βάση δεδομένων ----------
 
 def get_conn() -> sqlite3.Connection:
@@ -448,11 +452,12 @@ def _frames_equal(a: pd.DataFrame, b: pd.DataFrame) -> bool:
 
 # ---------- Sidebar (λειτουργίες) ----------
 with st.sidebar:
-    # Ensure year-scoped grid for sidebar actions
-    sidebar_year = st.radio("Έτος εργασίας (Sidebar)", [2022, 2023, 2024, 2025], index=2, horizontal=True)
+    # Use unified selected year from session_state (no separate sidebar picker)
+    sidebar_year = int(st.session_state.get("selected_year", 2024))
     session_key = f"grid_df::{sidebar_year}"
     if session_key not in st.session_state:
-        st.session_state[session_key] = load_grid_df_for_year(int(sidebar_year))
+        st.session_state[session_key] = load_grid_df_for_year(sidebar_year)
+    st.caption(f"Ενεργό έτος: {sidebar_year}")
 
     st.header("ℹ️ Οδηγίες")
     st.markdown(
@@ -527,7 +532,7 @@ with st.sidebar:
             st.error(f"Αποτυχία ανάγνωσης CSV: {e}")
 
     st.markdown("—")
-    st.subheader("Καθαρισμός (στο επιλεγμένο έτος Sidebar)")
+    st.subheader("Καθαρισμός (στο επιλεγμένο έτος)")
     month_to_clear = st.selectbox("Μήνας", MONTHS, key="clear_month_select")
     if st.button("🧹 Καθάρισε τον μήνα στο έτος", key="btn_clear_month_year_only"):
         base = st.session_state[session_key].copy()
@@ -543,12 +548,33 @@ with st.sidebar:
         st.session_state[session_key] = empty_grid()
         st.warning(f"Καθαρίστηκαν όλοι οι μήνες στο {sidebar_year}. Πάτα Αποθήκευση στην κεντρική φόρμα.")
 
+    st.markdown("—")
+    st.subheader("Μαζικός καθαρισμός (ΟΛΑ τα έτη)")
+    confirm_all_years = st.checkbox("Είμαι σίγουρος/η ότι θέλω να καθαρίσω ΟΛΟΥΣ τους μήνες σε ΟΛΑ τα έτη", key="chk_clear_all_years")
+    if st.button("🧨 Καθάρισε ΟΛΟΥΣ τους μήνες σε ΟΛΑ τα έτη", key="btn_clear_all_months_all_years"):
+        if not confirm_all_years:
+            st.warning("Επίλεξε πρώτα το checkbox επιβεβαίωσης για τον μαζικό καθαρισμό.")
+        else:
+            errors = []
+            for y in [2022, 2023, 2024, 2025]:
+                y_key = f"grid_df::{y}"
+                st.session_state[y_key] = empty_grid()
+                ok, err = save_grid_df_for_year(st.session_state[y_key], int(y))
+                if not ok and err:
+                    errors.append(f"{y}: {err}")
+            if errors:
+                st.error("Ο καθαρισμός ολοκληρώθηκε με σφάλματα σε ορισμένα έτη: " + "; ".join(errors))
+            else:
+                st.success("Καθαρίστηκαν ΟΛΟΙ οι μήνες σε ΟΛΑ τα έτη (2022–2025). Το ενιαίο bookings αρχείο ανανεώθηκε.")
+
 # ---------- Πίνακας (HTML‑styled) με φόρμα αποθήκευσης ----------
 main_tabs = st.tabs(["Καταχώρηση", "Στατιστικά"])  # δύο σελίδες: εισαγωγή & στατιστικά
 
 with main_tabs[0]:
     # Reload grid whenever the selected year changes
     current_year = st.radio("Έτος καταχώρησης", [2022, 2023, 2024, 2025], index=2, horizontal=True)
+    # Sync unified year for the whole app (sidebar reads this)
+    st.session_state["selected_year"] = int(current_year)
     session_key = f"grid_df::{current_year}"
     if session_key not in st.session_state:
         st.session_state[session_key] = load_grid_df_for_year(int(current_year))
