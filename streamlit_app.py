@@ -211,8 +211,14 @@ def load_grid_df() -> pd.DataFrame:
     return grid
 
 
+def _norm_df(df: pd.DataFrame) -> pd.DataFrame:
+    # Εξαναγκάζουμε ίδια διάταξη/τύπους και άδειο string αντί για <NA>
+    df2 = df.reindex(index=DAYS, columns=GRID_COLUMNS)
+    df2 = df2.astype("string").fillna("")
+    return df2
+
 def save_grid_df(grid: pd.DataFrame) -> Tuple[bool, Optional[str]]:
-    grid = grid.astype("string")
+    grid = _norm_df(grid)
     try:
         with get_conn() as c:
             cur = c.cursor()
@@ -247,6 +253,11 @@ def save_grid_df(grid: pd.DataFrame) -> Tuple[bool, Optional[str]]:
     except Exception as e:
         return False, str(e)
 
+def _frames_equal(a: pd.DataFrame, b: pd.DataFrame) -> bool:
+    a2 = _norm_df(a)
+    b2 = _norm_df(b)
+    return a2.equals(b2)
+
 # ---------- Sidebar (λειτουργίες) ----------
 with st.sidebar:
     st.header("⚙️ Ρυθμίσεις & Ενέργειες")
@@ -277,13 +288,6 @@ with st.sidebar:
             mime="text/csv",
         )
 
-def _frames_equal(a: pd.DataFrame, b: pd.DataFrame) -> bool:
-    if a.shape != b.shape or list(a.columns) != list(b.columns) or list(a.index) != list(b.index):
-        return False
-    return hash_pandas_object(a.astype("string").stack(), index=True).equals(
-        hash_pandas_object(b.astype("string").stack(), index=True)
-    )
-
 # ---------- Αρχικός πίνακας (Data Editor) ----------
 if "grid_df" not in st.session_state:
     st.session_state["grid_df"] = load_grid_df()
@@ -301,16 +305,17 @@ st.markdown(
 # Ρύθμιση text columns για ΣΥΓΚΕΚΡΙΜΕΝΗ συμπεριφορά εισαγωγής/διαγραφής
 col_cfg = {col: st.column_config.TextColumn(col, help="Γράψε π.χ. 22 ή 22:120. Πολλαπλές εγγραφές με κόμμα.") for col in GRID_COLUMNS}
 
+view_df = _norm_df(st.session_state["grid_df"])  # πάντα "" αντί για <NA>
 edited = st.data_editor(
-    st.session_state["grid_df"],
+    view_df,
     num_rows="fixed",
     use_container_width=True,
     key="booking_editor",
     column_config=col_cfg,
 )
 # Ενημέρωση state ΜΟΝΟ αν όντως άλλαξε κάτι (αποφεύγει διπλές ενημερώσεις/lag)
-current_df = st.session_state["grid_df"].astype("string")
-new_df = edited.astype("string")
+current_df = _norm_df(st.session_state["grid_df"])
+new_df = _norm_df(edited)
 if not _frames_equal(current_df, new_df):
     st.session_state["grid_df"] = new_df
 
