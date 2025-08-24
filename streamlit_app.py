@@ -487,8 +487,20 @@ with main_tabs[0]:
                     continue
                 seen.add(key)
                 dedup.append((y, p))
-            merged_tokens = keep_old + dedup
-            updated.at[d, colname] = serialize_entries(merged_tokens)
+            # ΕΝΑ (1) value ανά κελί — καθάρισμα πολλαπλών τιμών
+            # Συνένωση υποψήφιων tokens
+            seq = keep_old + dedup
+            chosen: Optional[Tuple[int, Optional[float]]] = None
+            if seq:
+                # Προτίμηση: τιμή τρέχοντος έτους (αν υπάρχει) — πάρ’ την τελευταία που δόθηκε
+                cur_candidates = [t for t in seq if int(t[0]) == int(current_year)]
+                if cur_candidates:
+                    chosen = cur_candidates[-1]
+                else:
+                    # Αλλιώς κράτα την πιο πρόσφατη χρονιά (μέγιστο year)
+                    chosen = max(seq, key=lambda t: int(t[0]))
+            # Αποθήκευση μόνο ενός token (χωρίς κόμματα). Αν δεν υπάρχει τίποτα, άδειο
+            updated.at[d, colname] = serialize_entries([chosen]) if chosen else ""
         st.session_state["grid_df"] = updated.astype("string").fillna("")
         ok, err = save_grid_df(st.session_state["grid_df"])
         if ok:
