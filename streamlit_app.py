@@ -46,6 +46,7 @@ MONTHS = [
 ]
 DAYS = list(range(1, 32))  # 1–31
 
+
 # Μήνες EN για αρχεία (όνομα αρχείου)
 MONTH_EN = {
     "Απρίλιος": "APRIL",
@@ -56,6 +57,8 @@ MONTH_EN = {
     "Σεπτέμβριος": "SEPTEMBER",
     "Οκτώβριος": "OCTOBER",
 }
+# Reverse map EN -> GR for imports that may use EN names
+MONTH_GR_FROM_EN = {en: gr for gr, en in MONTH_EN.items()}
 
 # Όροφοι (εμφάνιση)
 FLOORS_DISPLAY = ["Ισόγειο", "Α", "Β"]
@@ -451,56 +454,102 @@ with st.sidebar:
         "Γράψε σε κελιά τιμές όπως **22** ή **22:120**. Χώρισε πολλαπλές τιμές με κόμμα.\n\n"
         "Οι αλλαγές **δεν** αποθηκεύονται αυτόματα — πατάς **Αποθήκευση** στο κάτω μέρος του πίνακα.")
     st.markdown("—")
-    # CSV upload + merge/replace logic
-    st.subheader("Εισαγωγή από CSV")
-    up = st.file_uploader("Επίλεξε CSV", type=["csv"], help="Δέχεται είτε long-format bookings.csv (year,floor,month,day,price) είτε grid-format με στήλες μήνας+όροφος και προαιρετική στήλη Ημέρα.")
+    # Excel-only upload + merge/replace logic
+    st.subheader("Εισαγωγή από Excel")
+    up = st.file_uploader(
+        "Επίλεξε Excel",
+        type=["xlsx", "xls"],
+        help=(
+            "Δέχεται είτε long-format (στήλες: year, floor, month, day, price) σε φύλλο 1, "
+            "είτε grid-format με στήλες τύπου 'Μάιος Ισόγειο', 'Μάιος Α', 'Μάιος Β' και προαιρετική στήλη 'Ημέρα'."
+        ),
+    )
     merge_mode = st.radio(
         "Τρόπος ενημέρωσης",
         ["Αντικατάσταση όλων", "Συγχώνευση (μόνο μη κενά)"],
         index=1,
-        help="Αντικατάσταση: το αρχείο αντικαθιστά όλο το πλέγμα. Συγχώνευση: μόνο τα μη κενά του αρχείου γράφουν πάνω στα υπάρχοντα.",
+        help=(
+            "Αντικατάσταση: το αρχείο αντικαθιστά όλο το πλέγμα στο έτος του Sidebar.\n"
+            "Συγχώνευση: μόνο τα μη κενά του αρχείου γράφουν πάνω στα υπάρχοντα."
+        ),
     )
-    if up is not None and st.button("↪︎ Ενημέρωση πίνακα από CSV"):
+    if up is not None and st.button("↪︎ Ενημέρωση πίνακα από Excel"):
         try:
-            src = pd.read_csv(up)
-            # Δοκίμασε long-format bookings
+            # Διαβάζουμε το πρώτο φύλλο (sheet 0)
+            src = pd.read_excel(up, sheet_name=0)
+            df = src.copy()
+            # Ανιχνεύουμε long-format: απαιτούνται (year, floor, month, day)
+            cols_lower = {c.lower().strip(): c for c in df.columns}
             required_long = {"year", "floor", "month", "day"}
-            if required_long.issubset(set(map(str.lower, src.columns))):
+            is_long = required_long.issubset(set(cols_lower.keys()))
+
+            new_grid = empty_grid()
+            if is_long:
                 # Κανονικοποίηση ονομάτων
-                cols_map = {c: c.lower() for c in src.columns}
-                df = src.rename(columns=cols_map)
-                # Φτιάξε κενό grid
-                new_grid = empty_grid()
-                # Για κάθε εγγραφή σχημάτισε token YY ή YY:price και πρόσθεσέ το στο αντίστοιχο κελί
+                df = df.rename(columns={v: k for k, v in cols_lower.items()})  # now lowercase
                 for _, r in df.iterrows():
                     try:
-                        y = int(r["year"]) % 100
-                        m = str(r["month"]).strip()
-                        f = str(r["floor"]).strip()
-                        d = int(r["day"]) if not pd.isna(r["day"]) else None
-                        if m not in MONTHS or f not in FLOORS_DISPLAY or d not in DAYS:
+                        year = int(r.get("year"))
+                        floor = str(r.get("floor")).strip()
+                        month_raw = str(r.get("month")).strip()
+                        day = int(r.get("day")) if not pd.isna(r.get("day")) else None
+                        if pd.isna(year) or floor not in FLOORS_DISPLAY or day not in DAYS:
                             continue
-                        token = f"{y:02d}"
+                        # Υποστήριξη μηνών σε GR ή EN
+                        if month_raw in MONTHS:
+                            month_gr = month_raw
+                            month_en = MONTH_EN[month_gr]
+                        else:
+                            month_en_u = month_raw.upper()
+                            month_gr = MONTH_GR_FROM_EN.get(month_en_u)
+                            if not month_gr:
+                                continue
+                            month_en = month_en_u
+                        col = f"{month_gr} {floor}"
+                        # Τιμή (price) είναι υποχρεωτική για το token
                         if "price" in df.columns and not pd.isna(r.get("price")):
-                            token = f"{token}:{float(r['price']):g}"
-                        col = f"{m} {f}"
-                        prev = str(new_grid.at[d, col] or "").strip()
-                        new_grid.at[d, col] = (prev + ("," if prev and token else "") + token) if token else prev
+                            price_val = float(r.get("price"))
+                        else:
+                            # αν δεν υπάρχει τιμή, αγνόησε την εγγραφή
+                            continue
+                        prev = str(new_grid.at[day, col] or "").strip()
+                        token = f"{price_val:g}:{int(year)};{month_en}"
+                        new_grid.at[day, col] = (prev + ("," if prev else "") + token)
                     except Exception:
                         continue
             else:
-                # Προσπάθησε grid-format: μπορεί να έχει στήλη Ημέρα
-                df = src.copy()
+                # Grid-format: μπορεί να έχει στήλη Ημέρα, και στήλες τύπου "Μάιος Ισόγειο" κ.λπ.
                 if "Ημέρα" in df.columns:
                     df = df.set_index("Ημέρα")
-                # Περιορίζουμε σε γνωστές στήλες
                 keep_cols = [c for c in df.columns if c in GRID_COLUMNS]
-                new_grid = empty_grid()
-                if keep_cols:
-                    new_grid.loc[new_grid.index, keep_cols] = df[keep_cols].astype("string").reindex(index=DAYS).fillna("")
-                else:
-                    st.error("Το CSV δεν αναγνωρίστηκε (ούτε bookings long-format ούτε grid-format με σωστές στήλες).")
+                if not keep_cols:
+                    st.error("Το Excel δεν αναγνωρίστηκε (ούτε long-format ούτε grid-format με σωστές στήλες).")
                     new_grid = None
+                else:
+                    # Αντιγραφή στα γνωστά columns, με μετατροπή απλών αριθμών σε tokens για το τρέχον sidebar_year
+                    tmp = empty_grid()
+                    tmp.loc[tmp.index, keep_cols] = df[keep_cols].astype("string").reindex(index=DAYS).fillna("")
+                    for d in DAYS:
+                        for col in keep_cols:
+                            raw = str(tmp.at[d, col] or "").strip()
+                            if raw == "":
+                                continue
+                            month_gr, _floor = split_month_floor(col)
+                            month_en = MONTH_EN[month_gr]
+                            parts = [p.strip() for p in raw.split(",") if p and p.strip()]
+                            toks = []
+                            for p in parts:
+                                # Αν είναι σκέτος αριθμός, κάν’ τον token για το έτος του sidebar
+                                if re.match(r"^\d+(?:\.\d+)?$", p):
+                                    toks.append(f"{float(p):g}:{int(sidebar_year)};{month_en}")
+                                else:
+                                    # Κράτα μόνο έγκυρα tokens (price:YYYY;MONTH)
+                                    m = TOKEN_DEV_RE.match(p)
+                                    if m:
+                                        # προαιρετικά, αν το token αφορά άλλο μήνα, το αγνοούμε (κρατάμε μόνο σωστό month)
+                                        if m.group(3).upper() == month_en:
+                                            toks.append(f"{float(m.group(1)):g}:{int(m.group(2))};{m.group(3).upper()}")
+                            new_grid.at[d, col] = ",".join(toks)
 
             if new_grid is not None:
                 base = st.session_state[session_key].copy()
@@ -514,9 +563,9 @@ with st.sidebar:
                         right = new_grid[col].fillna("")
                         merged[col] = np.where(right.astype(str).str.strip() != "", right, left)
                     st.session_state[session_key] = _norm_df(merged)     # for Συγχώνευση
-                st.success("Ο πίνακας ενημερώθηκε από το CSV στην τρέχουσα χρονιά. Μην ξεχάσεις να πατήσεις Αποθήκευση αν θες να γραφτεί στη βάση.")
+                st.success("Ο πίνακας ενημερώθηκε από το Excel στην τρέχουσα χρονιά του Sidebar. Μην ξεχάσεις να πατήσεις Αποθήκευση.")
         except Exception as e:
-            st.error(f"Αποτυχία ανάγνωσης CSV: {e}")
+            st.error(f"Αποτυχία ανάγνωσης Excel: {e}")
 
     st.markdown("—")
     st.subheader("Καθαρισμός (στο επιλεγμένο έτος)")
@@ -537,22 +586,27 @@ with st.sidebar:
 
     st.markdown("—")
     st.subheader("Μαζικός καθαρισμός (ΟΛΑ τα έτη)")
-    confirm_all_years = st.checkbox("Είμαι σίγουρος/η ότι θέλω να καθαρίσω ΟΛΟΥΣ τους μήνες σε ΟΛΑ τα έτη", key="chk_clear_all_years")
-    if st.button("🧨 Καθάρισε ΟΛΟΥΣ τους μήνες σε ΟΛΑ τα έτη", key="btn_clear_all_months_all_years"):
-        if not confirm_all_years:
-            st.warning("Επίλεξε πρώτα το checkbox επιβεβαίωσης για τον μαζικό καθαρισμό.")
+    confirm_all_years = st.checkbox(
+        "Είμαι σίγουρος/η ότι θέλω να καθαρίσω ΟΛΟΥΣ τους μήνες σε ΟΛΑ τα έτη",
+        key="chk_clear_all_years",
+    )
+    do_clear_all = st.button(
+        "🧨 Καθάρισε ΟΛΟΥΣ τους μήνες σε ΟΛΑ τα έτη",
+        key="btn_clear_all_months_all_years",
+        disabled=not confirm_all_years,
+    )
+    if do_clear_all:
+        errors = []
+        for y in [2022, 2023, 2024, 2025]:
+            y_key = f"grid_df::{y}"
+            st.session_state[y_key] = empty_grid()
+            ok, err = save_grid_df_for_year(st.session_state[y_key], int(y))
+            if not ok and err:
+                errors.append(f"{y}: {err}")
+        if errors:
+            st.error("Ο καθαρισμός ολοκληρώθηκε με σφάλματα σε ορισμένα έτη: " + "; ".join(errors))
         else:
-            errors = []
-            for y in [2022, 2023, 2024, 2025]:
-                y_key = f"grid_df::{y}"
-                st.session_state[y_key] = empty_grid()
-                ok, err = save_grid_df_for_year(st.session_state[y_key], int(y))
-                if not ok and err:
-                    errors.append(f"{y}: {err}")
-            if errors:
-                st.error("Ο καθαρισμός ολοκληρώθηκε με σφάλματα σε ορισμένα έτη: " + "; ".join(errors))
-            else:
-                st.success("Καθαρίστηκαν ΟΛΟΙ οι μήνες σε ΟΛΑ τα έτη (2022–2025). Το ενιαίο bookings αρχείο ανανεώθηκε.")
+            st.success("Καθαρίστηκαν ΟΛΟΙ οι μήνες σε ΟΛΑ τα έτη (2022–2025). Το ενιαίο bookings αρχείο ανανεώθηκε.")
 
 # ---------- Πίνακας (HTML‑styled) με φόρμα αποθήκευσης ----------
 main_tabs = st.tabs(["Καταχώρηση", "Στατιστικά"])  # δύο σελίδες: εισαγωγή & στατιστικά
