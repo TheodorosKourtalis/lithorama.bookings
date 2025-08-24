@@ -71,6 +71,8 @@ MONTH_EN = {
 }
 # Reverse map EN -> GR for imports that may use EN names
 MONTH_GR_FROM_EN = {en: gr for gr, en in MONTH_EN.items()}
+# Αριθμητικός χάρτης μηνών (GR -> 1..12)
+MONTH_NUM = {m: i+1 for i, m in enumerate(MONTHS)}
 
 # Όροφοι (εμφάνιση)
 FLOORS_DISPLAY = ["Ισόγειο", "Α", "Β"]
@@ -870,3 +872,439 @@ with main_tabs[1]:
             if not revenue.empty:
                 st.write("**Έσοδα ανά έτος**")
                 st.dataframe(revenue, use_container_width=True)
+
+        # ===================== EXTRA STATS & GRAPHS =====================
+        st.markdown("---")
+        st.subheader("Έσοδα ανά μήνα (stacked ανά όροφο)")
+        rev_mf = fdf.dropna(subset=["price"]).groupby(["year", "month", "floor"]) ["price"].sum().reset_index()
+        if not rev_mf.empty:
+            # Preserve month order
+            rev_mf["month"] = pd.Categorical(rev_mf["month"], categories=MONTHS, ordered=True)
+            st.vega_lite_chart(
+                rev_mf,
+                {
+                    "mark": "bar",
+                    "encoding": {
+                        "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
+                        "y": {"aggregate": "sum", "field": "price", "type": "quantitative", "title": "Έσοδα"},
+                        "color": {"field": "floor", "type": "nominal", "title": "Όροφος"},
+                        "column": {"field": "year", "type": "ordinal", "title": "Έτος"},
+                        "tooltip": [
+                            {"field": "year", "type": "ordinal", "title": "Έτος"},
+                            {"field": "month", "type": "ordinal", "title": "Μήνας"},
+                            {"field": "floor", "type": "nominal", "title": "Όροφος"},
+                            {"aggregate": "sum", "field": "price", "type": "quantitative", "title": "Έσοδα"}
+                        ]
+                    },
+                    "width": 280,
+                    "height": 260
+                },
+                use_container_width=True,
+            )
+        else:
+            st.info("Δεν υπάρχουν έσοδα για να εμφανιστούν ανά μήνα.")
+
+        st.subheader("Σύγκριση ανά μήνα μεταξύ ετών (έσοδα)")
+        rev_my = fdf.dropna(subset=["price"]).groupby(["year", "month"]).price.sum().reset_index()
+        if not rev_my.empty:
+            rev_my["month"] = pd.Categorical(rev_my["month"], categories=MONTHS, ordered=True)
+            st.vega_lite_chart(
+                rev_my,
+                {
+                    "mark": "line",
+                    "encoding": {
+                        "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
+                        "y": {"field": "price", "type": "quantitative", "title": "Έσοδα"},
+                        "color": {"field": "year", "type": "nominal", "title": "Έτος"},
+                        "tooltip": [
+                            {"field": "year", "type": "ordinal"},
+                            {"field": "month", "type": "ordinal"},
+                            {"field": "price", "type": "quantitative", "title": "Έσοδα"}
+                        ]
+                    },
+                    "width": "container",
+                    "height": 260
+                },
+                use_container_width=True,
+            )
+
+        st.subheader("Εβδομαδιαίο μοτίβο (κρατήσεις ανά ημέρα εβδομάδας)")
+        # Προετοιμασία ημερομηνίας & weekday
+        # Χάρτης GR μήνα -> αριθμός
+        fdf_dates = fdf.copy()
+        fdf_dates["month_num"] = fdf_dates["month"].map(MONTH_NUM)
+        # Κατασκευή ημερομηνίας (κάποια NaN θα γίνουν NaT και θα αγνοηθούν)
+        fdf_dates["date"] = pd.to_datetime(dict(year=fdf_dates["year"], month=fdf_dates["month_num"], day=fdf_dates["day"]), errors="coerce")
+        fdf_dates = fdf_dates.dropna(subset=["date"])  # κρατάμε μόνο έγκυρες
+        if not fdf_dates.empty:
+            fdf_dates["weekday"] = fdf_dates["date"].dt.day_name(locale="el_GR") if hasattr(fdf_dates["date"].dt, "day_name") else fdf_dates["date"].dt.day_name()
+            # Τάξη ημερών (Δευτέρα..Κυριακή) – fallback στα Αγγλικά αν χρειάζεται
+            weekday_order = [
+                "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+            ]
+            # Αν είναι ελληνικά, φτιάξε GR σειρά
+            if fdf_dates["weekday"].str.contains("Δευ", na=False).any():
+                weekday_order = ["Δευτέρα", "Τρίτη", "Τετάρτη", "Πέμπτη", "Παρασκευή", "Σάββατο", "Κυριακή"]
+            wdf = fdf_dates.groupby(["weekday"]).size().reset_index(name="κρατήσεις")
+            wdf["weekday"] = pd.Categorical(wdf["weekday"], categories=weekday_order, ordered=True)
+            st.bar_chart(wdf.set_index("weekday"))
+        else:
+            st.info("Δεν ήταν δυνατή η δημιουργία έγκυρων ημερομηνιών για weekday ανάλυση.")
+
+        st.subheader("Boxplot τιμών ανά μήνα")
+        prices_month = fdf.dropna(subset=["price"]).copy()
+        if not prices_month.empty:
+            prices_month["month"] = pd.Categorical(prices_month["month"], categories=MONTHS, ordered=True)
+            st.vega_lite_chart(
+                prices_month,
+                {
+                    "mark": {"type": "boxplot"},
+                    "encoding": {
+                        "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
+                        "y": {"field": "price", "type": "quantitative", "title": "Τιμή"},
+                        "color": {"field": "month", "type": "nominal", "legend": None}
+                    },
+                    "width": "container",
+                    "height": 260
+                },
+                use_container_width=True,
+            )
+        else:
+            st.info("Δεν υπάρχουν τιμές για boxplot.")
+
+        st.subheader("Πληρότητα ανά μήνα (% ημερών με τουλάχιστον μία κράτηση)")
+        # Για κάθε (έτος, μήνας, όροφος) μετράμε τις διαφορετικές ημέρες και το / σύνολο ημερών του μήνα
+        occ = (
+            fdf.groupby(["year", "month", "floor"]).agg(days_booked=("day", lambda s: s.dropna().nunique())).reset_index()
+        )
+        if not occ.empty:
+            # Υπολογισμός συνολικών ημερών/μήνα ανά έτος
+            occ["month_num"] = occ["month"].map(MONTH_NUM)
+            import calendar
+            occ["days_in_month"] = occ.apply(lambda r: calendar.monthrange(int(r["year"]), int(r["month_num"]))[1], axis=1)
+            occ["occupancy"] = (occ["days_booked"] / occ["days_in_month"]) * 100
+            occ["month"] = pd.Categorical(occ["month"], categories=MONTHS, ordered=True)
+            st.vega_lite_chart(
+                occ,
+                {
+                    "mark": "line",
+                    "encoding": {
+                        "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
+                        "y": {"field": "occupancy", "type": "quantitative", "title": "% Πληρότητα"},
+                        "color": {"field": "floor", "type": "nominal", "title": "Όροφος"},
+                        "column": {"field": "year", "type": "ordinal", "title": "Έτος"},
+                        "tooltip": [
+                            {"field": "year", "type": "ordinal"},
+                            {"field": "month", "type": "ordinal"},
+                            {"field": "floor", "type": "nominal"},
+                            {"field": "occupancy", "type": "quantitative", "title": "%"}
+                        ]
+                    },
+                    "width": 280,
+                    "height": 260
+                },
+                use_container_width=True,
+            )
+        else:
+            st.info("Δεν βρέθηκαν δεδομένα για υπολογισμό πληρότητας.")
+
+        # ===================== EXTRA PLUS: CLIENT-FOCUSED STATS =====================
+        st.markdown("---")
+        st.subheader("Σωρευτικά έσοδα (YTD) ανά έτος")
+        rev_month = fdf.dropna(subset=["price"]).groupby(["year", "month"]) ["price"].sum().reset_index()
+        if not rev_month.empty:
+            rev_month["month"] = pd.Categorical(rev_month["month"], categories=MONTHS, ordered=True)
+            # Υπολογισμός σωρευτικών ανά έτος στην τάξη μηνών
+            rev_month = rev_month.sort_values(["year", "month"]).copy()
+            rev_month["ytd"] = rev_month.groupby("year")["price"].cumsum()
+            st.vega_lite_chart(
+                rev_month,
+                {
+                    "mark": "line",
+                    "encoding": {
+                        "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
+                        "y": {"field": "ytd", "type": "quantitative", "title": "Σωρευτικά έσοδα"},
+                        "color": {"field": "year", "type": "nominal", "title": "Έτος"},
+                        "tooltip": [
+                            {"field": "year", "type": "ordinal"},
+                            {"field": "month", "type": "ordinal"},
+                            {"field": "ytd", "type": "quantitative", "title": "YTD"}
+                        ]
+                    },
+                    "width": "container",
+                    "height": 280
+                },
+                use_container_width=True,
+            )
+        else:
+            st.info("Δεν υπάρχουν δεδομένα εσόδων για σωρευτικό γράφημα.")
+
+        st.subheader("Μερίδιο εσόδων ανά όροφο (mix) ανά μήνα")
+        mix = fdf.dropna(subset=["price"]).groupby(["year", "month", "floor"]) ["price"].sum().reset_index()
+        if not mix.empty:
+            mix["month"] = pd.Categorical(mix["month"], categories=MONTHS, ordered=True)
+            # Υπολογισμός ποσοστού ανά (έτος, μήνα)
+            mix["total_month"] = mix.groupby(["year", "month"]) ["price"].transform("sum")
+            mix["share"] = (mix["price"] / mix["total_month"]) * 100
+            st.vega_lite_chart(
+                mix,
+                {
+                    "mark": "area",
+                    "encoding": {
+                        "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
+                        "y": {"field": "share", "type": "quantitative", "stack": "normalize", "title": "% μερίδιο"},
+                        "color": {"field": "floor", "type": "nominal", "title": "Όροφος"},
+                        "column": {"field": "year", "type": "ordinal", "title": "Έτος"},
+                        "tooltip": [
+                            {"field": "year", "type": "ordinal"},
+                            {"field": "month", "type": "ordinal"},
+                            {"field": "floor", "type": "nominal"},
+                            {"field": "share", "type": "quantitative", "title": "%"}
+                        ]
+                    },
+                    "width": 280,
+                    "height": 260
+                },
+                use_container_width=True,
+            )
+        else:
+            st.info("Δεν υπάρχουν δεδομένα για μερίδιο εσόδων.")
+
+        st.subheader("Μεταβολή εσόδων ανά μήνα σε σχέση με πέρσι (YoY)")
+        yoy_years = sorted(fdf["year"].dropna().astype(int).unique().tolist())
+        if len(yoy_years) >= 2:
+            default_year = yoy_years[-1]
+            compare_year = st.selectbox("Έτος προς ανάλυση", yoy_years, index=len(yoy_years)-1, key="yoy_target_year")
+            base_year = st.selectbox("Σύγκριση με έτος", yoy_years[:-1], index=len(yoy_years)-2 if len(yoy_years) > 2 else 0, key="yoy_base_year")
+            # Revenue per (year, month)
+            yoy = fdf.dropna(subset=["price"]).groupby(["year", "month"]) ["price"].sum().reset_index()
+            yoy["month"] = pd.Categorical(yoy["month"], categories=MONTHS, ordered=True)
+            # Pivot to align months across two years
+            piv = yoy.pivot_table(index="month", columns="year", values="price", aggfunc="sum").reindex(MONTHS)
+            if compare_year in piv.columns and base_year in piv.columns:
+                df_yoy = pd.DataFrame({
+                    "month": MONTHS,
+                    "delta": (piv[compare_year] - piv[base_year]).fillna(0),
+                    "delta_pct": ((piv[compare_year] - piv[base_year]) / piv[base_year].replace({0: np.nan})) * 100,
+                }).fillna(0)
+                st.vega_lite_chart(
+                    df_yoy,
+                    {
+                        "mark": "bar",
+                        "encoding": {
+                            "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
+                            "y": {"field": "delta", "type": "quantitative", "title": f"Δ έσοδα: {compare_year} vs {base_year}"},
+                            "color": {"condition": {"test": "datum.delta >= 0", "value": "#2ca02c"}, "value": "#d62728"},
+                            "tooltip": [
+                                {"field": "month", "type": "ordinal"},
+                                {"field": "delta", "type": "quantitative", "title": "Δ έσοδα"},
+                                {"field": "delta_pct", "type": "quantitative", "title": "Δ %"}
+                            ]
+                        },
+                        "width": "container",
+                        "height": 240
+                    },
+                    use_container_width=True,
+                )
+            else:
+                st.info("Δεν υπάρχουν και τα δύο έτη για πλήρη YoY σύγκριση.")
+        else:
+            st.info("Απαιτούνται τουλάχιστον δύο έτη για YoY.")
+
+        # ------- Practical KPIs for a non-technical client -------
+        st.markdown("---")
+        st.subheader("Γρήγορα Συμπεράσματα (Auto-Insights)")
+        try:
+            insights = []
+            # Best month by revenue (overall and per latest year)
+            if not rev_month.empty:
+                best_month_overall = (
+                    rev_month.groupby("month")["price"].sum().sort_values(ascending=False).index[0]
+                )
+                insights.append(f"Καλύτερος μήνας συνολικά: **{best_month_overall}**.")
+                ly = int(rev_month["year"].max())
+                best_month_last = (
+                    rev_month[rev_month["year"] == ly].sort_values("price", ascending=False)["month"].iloc[0]
+                )
+                insights.append(f"Καλύτερος μήνας στο **{ly}**: **{best_month_last}**.")
+            # Best floor by revenue in latest year
+            rev_floor_last = fdf.dropna(subset=["price"]).groupby(["year", "floor"]) ["price"].sum().reset_index()
+            if not rev_floor_last.empty:
+                ly = int(rev_floor_last["year"].max())
+                sub = rev_floor_last[rev_floor_last["year"] == ly].sort_values("price", ascending=False)
+                if not sub.empty:
+                    insights.append(f"Κορυφαίος όροφος το **{ly}**: **{sub.iloc[0]['floor']}**.")
+            # Occupancy best month (using days with ≥1 booking)
+            occ2 = (
+                fdf.groupby(["year", "month"]).agg(days_booked=("day", lambda s: s.dropna().nunique())).reset_index()
+            )
+            if not occ2.empty:
+                occ2["month_num"] = occ2["month"].map(MONTH_NUM)
+                import calendar
+                occ2["days_in_month"] = occ2.apply(lambda r: calendar.monthrange(int(r["year"]), int(r["month_num"]))[1], axis=1)
+                occ2["occ"] = (occ2["days_booked"] / occ2["days_in_month"]) * 100
+                # pick latest year
+                ly = int(occ2["year"].max())
+                sub = occ2[occ2["year"] == ly].sort_values("occ", ascending=False)
+                if not sub.empty:
+                    insights.append(f"Μέγιστη πληρότητα στο **{ly}**: **{sub.iloc[0]['month']}** (~{sub.iloc[0]['occ']:.0f}%).")
+            # Price median this year vs last
+            years_ok = sorted(fdf["year"].dropna().unique().astype(int))
+            if len(years_ok) >= 2 and fdf["price"].notna().any():
+                y_now, y_prev = years_ok[-1], years_ok[-2]
+                med_now = float(fdf[(fdf["year"] == y_now) & fdf["price"].notna()]["price"].median()) if not fdf[(fdf["year"] == y_now)]["price"].dropna().empty else np.nan
+                med_prev = float(fdf[(fdf["year"] == y_prev) & fdf["price"].notna()]["price"].median()) if not fdf[(fdf["year"] == y_prev)]["price"].dropna().empty else np.nan
+                if not np.isnan(med_now) and not np.isnan(med_prev) and med_prev != 0:
+                    diff = med_now - med_prev
+                    pct = (diff / med_prev) * 100
+                    arrow = "↑" if diff >= 0 else "↓"
+                    insights.append(f"Διάμεση τιμή **{y_now}** vs **{y_prev}**: {arrow} {abs(pct):.1f}%.")
+            if insights:
+                for s_ in insights:
+                    st.write("• " + s_)
+            else:
+                st.info("Δεν προέκυψαν αυτόματα ευρήματα για τα επιλεγμένα φίλτρα.")
+        except Exception as _e:
+            st.info("Δεν ήταν δυνατή η παραγωγή auto-insights για τα τρέχοντα φίλτρα.")
+
+        # ===================== VALUE-ADD WITH NO NEW DATA =====================
+        st.markdown("---")
+        st.subheader("Στόχοι & Πρόοδος (χωρίς αποθήκευση)")
+        colt1, colt2 = st.columns(2)
+        with colt1:
+            target_year = st.number_input("Ετήσιος στόχος εσόδων (όλων των ορόφων)", min_value=0.0, value=0.0, step=100.0, help="Προσωρινή τιμή μόνο για προβολή – δεν αποθηκεύεται στο αρχείο.")
+        with colt2:
+            target_month = st.number_input("Μηνιαίος στόχος εσόδων (όλων των ορόφων)", min_value=0.0, value=0.0, step=100.0, help="Προσωρινή τιμή μόνο για προβολή.")
+        # Υπολογισμοί από φιλτραρισμένα δεδομένα
+        rev_all = fdf.dropna(subset=["price"]).groupby("year")["price"].sum().reset_index()
+        rev_month_now = fdf.dropna(subset=["price"]).groupby(["year", "month"]) ["price"].sum().reset_index()
+        # Έτος τελευταίο (στο εύρος φίλτρου)
+        if not rev_all.empty:
+            last_y = int(rev_all["year"].max())
+            y_rev = float(rev_all.loc[rev_all["year"] == last_y, "price"].iloc[0])
+            if target_year > 0:
+                pct = min(100.0, (y_rev / target_year) * 100.0)
+                st.progress(pct/100.0, text=f"{last_y}: {y_rev:,.0f} / {target_year:,.0f} ({pct:.1f}%)")
+        # Μήνας τρέχων (με βάση σύνολο δεδομένων μέσα στα φίλτρα)
+        if not rev_month_now.empty:
+            # διάλεξε μήνα με selectbox για στόχο
+            m_sel = st.selectbox("Μήνας για σύγκριση στόχου", MONTHS, index=MONTHS.index("Αύγουστος") if "Αύγουστος" in MONTHS else 0)
+            # Άθροισε για τον μήνα αυτό στο τελευταίο διαθέσιμο έτος
+            subm = rev_month_now[rev_month_now["month"] == m_sel]
+            if not subm.empty:
+                last_y_m = int(subm["year"].max())
+                m_rev = float(subm.loc[subm["year"] == last_y_m, "price"].sum())
+                if target_month > 0:
+                    pctm = min(100.0, (m_rev / target_month) * 100.0)
+                    st.progress(pctm/100.0, text=f"{m_sel} {last_y_m}: {m_rev:,.0f} / {target_month:,.0f} ({pctm:.1f}%)")
+
+        st.markdown("---")
+        st.subheader("Top / Bottom ημέρες (με βάση τιμή)")
+        # Εύρεση κορυφαίων / χειρότερων ημερών από τα φιλτραρισμένα
+        tbl_days = fdf.dropna(subset=["price"]).copy()
+        if not tbl_days.empty:
+            # Προστασία: με orders
+            tbl_days["month"] = pd.Categorical(tbl_days["month"], categories=MONTHS, ordered=True)
+            topn = int(st.number_input("Πλήθος (Top/Bottom)", min_value=3, max_value=50, value=10, step=1))
+            best = tbl_days.sort_values("price", ascending=False).head(topn).copy()
+            worst = tbl_days.sort_values("price", ascending=True).head(topn).copy()
+            c1, c2 = st.columns(2)
+            with c1:
+                st.write("**Top ημέρες**")
+                st.dataframe(best[["year", "month", "day", "floor", "price"]], use_container_width=True)
+            with c2:
+                st.write("**Bottom ημέρες**")
+                st.dataframe(worst[["year", "month", "day", "floor", "price"]], use_container_width=True)
+        else:
+            st.info("Δεν υπάρχουν τιμές για Top/Bottom.")
+
+        st.subheader("Ζώνες τιμολόγησης (price bands)")
+        if fdf["price"].notna().any():
+            bands_edges = st.multiselect(
+                "Όρια ζωνών (π.χ. 50, 100, 150)",
+                options=[25, 50, 75, 100, 125, 150, 200, 250, 300],
+                default=[50, 100, 150],
+                help="Ορίζει τα όρια σε € για τον υπολογισμό του ποσοστού κρατήσεων ανά ζώνη.",
+            )
+            edges = sorted(set([0] + [int(x) for x in bands_edges if x is not None] + [int(max(1000, fdf['price'].max()*1.1))]))
+            # Κοψίματα
+            labels = []
+            for i in range(len(edges)-1):
+                labels.append(f"{edges[i]}–{edges[i+1]}")
+            cut = pd.cut(fdf["price"], bins=edges, labels=labels, include_lowest=True, right=True)
+            band_tbl = fdf.assign(band=cut).groupby(["year", "band"]).size().reset_index(name="count")
+            if not band_tbl.empty:
+                st.vega_lite_chart(
+                    band_tbl,
+                    {
+                        "mark": "bar",
+                        "encoding": {
+                            "x": {"field": "band", "type": "ordinal", "title": "Ζώνη τιμής"},
+                            "y": {"field": "count", "type": "quantitative", "title": "Κρατήσεις"},
+                            "color": {"field": "year", "type": "nominal", "title": "Έτος"},
+                            "tooltip": [
+                                {"field": "year", "type": "ordinal"},
+                                {"field": "band", "type": "ordinal"},
+                                {"field": "count", "type": "quantitative"}
+                            ]
+                        },
+                        "width": "container",
+                        "height": 240
+                    },
+                    use_container_width=True,
+                )
+            else:
+                st.info("Δεν βρέθηκαν κρατήσεις για να υπολογιστούν ζώνες τιμών.")
+        else:
+            st.info("Δεν υπάρχουν τιμές για ζώνες.")
+
+        st.subheader("Σύνοψη τρέχοντος μήνα (YoY)")
+        # Επιλογή μήνα προς ανάλυση
+        month_sel = st.selectbox("Μήνας", MONTHS, index=MONTHS.index("Αύγουστος") if "Αύγουστος" in MONTHS else 0, key="yoy_month_sel")
+        curm = fdf[fdf["month"] == month_sel]
+        if not curm.empty:
+            # Τρέχον και προηγούμενο έτος διαθέσιμα;
+            ys = sorted(curm["year"].dropna().astype(int).unique())
+            if len(ys) >= 2:
+                y_now, y_prev = ys[-1], ys[-2]
+                rev_now = float(curm[curm["year"] == y_now]["price"].sum()) if curm["price"].notna().any() else 0.0
+                rev_prev = float(curm[curm["year"] == y_prev]["price"].sum()) if curm["price"].notna().any() else 0.0
+                # Occupancy proxy: μοναδικές ημέρες με τουλ. μία κράτηση (σε οποιονδήποτε όροφο)
+                occ_now = int(curm[curm["year"] == y_now]["day"].dropna().nunique())
+                occ_prev = int(curm[curm["year"] == y_prev]["day"].dropna().nunique())
+                med_now = float(curm[(curm["year"] == y_now) & curm["price"].notna()]["price"].median()) if curm["price"].notna().any() else 0.0
+                med_prev = float(curm[(curm["year"] == y_prev) & curm["price"].notna()]["price"].median()) if curm["price"].notna().any() else 0.0
+                m1, m2, m3 = st.columns(3)
+                with m1:
+                    delta_rev = rev_now - rev_prev
+                    st.metric("Έσοδα (YoY)", f"{rev_now:,.0f}", delta=f"{delta_rev:+.0f}")
+                with m2:
+                    delta_occ = occ_now - occ_prev
+                    st.metric("Πληρότητα (ημέρες με ≥1 κράτηση)", f"{occ_now}", delta=f"{delta_occ:+d}")
+                with m3:
+                    if med_prev != 0:
+                        pct = ((med_now - med_prev)/med_prev)*100
+                        st.metric("Διάμεση τιμή (YoY)", f"{med_now:.0f}", delta=f"{pct:+.1f}%")
+                    else:
+                        st.metric("Διάμεση τιμή (YoY)", f"{med_now:.0f}")
+            else:
+                st.info("Χρειάζονται τουλάχιστον δύο έτη για YoY στον επιλεγμένο μήνα.")
+        else:
+            st.info("Δεν υπάρχουν δεδομένα για τον επιλεγμένο μήνα.")
+
+        st.subheader("Ανώμαλες ημέρες (spikes/dips τιμής ανά μήνα)")
+        # Z-score ανά (έτος, μήνα) πάνω στο price
+        if fdf["price"].notna().any():
+            g = fdf.dropna(subset=["price"]).groupby(["year", "month"]) ["price"]
+            zdf = g.apply(lambda s: (s - s.mean())/s.std(ddof=0) if s.std(ddof=0) not in (0, np.nan) else pd.Series([0]*len(s), index=s.index)).reset_index(name="z")
+            merged = fdf.join(zdf[["z"]], how="left")
+            # Top |z| 10
+            merged["absz"] = merged["z"].abs()
+            outliers = merged.sort_values("absz", ascending=False).head(10)
+            if not outliers.empty:
+                st.write("**Top 10 ανωμαλίες** (|z| μεγαλύτερο)")
+                st.dataframe(outliers[["year", "month", "day", "floor", "price", "z"]], use_container_width=True)
+            else:
+                st.info("Δεν βρέθηκαν ανωμαλίες.")
+        else:
+            st.info("Δεν υπάρχουν τιμές για ανίχνευση ανωμαλιών.")
