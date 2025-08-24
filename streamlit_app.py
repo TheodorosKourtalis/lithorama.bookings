@@ -465,6 +465,9 @@ with main_tabs[0]:
                 m = TOKEN_RE.match(tok)
                 if m:
                     yy, price = m.group(1), m.group(2)
+                    # ΔΕΧΟΜΑΣΤΕ μόνο tokens του ΤΡΕΧΟΝΤΟΣ έτους από το input· τα υπόλοιπα τα κρατάμε από keep_old
+                    if int(yy) != yy_current:
+                        continue
                     y_full = 2000 + int(yy)
                     price_val = float(price) if price is not None else None
                     new_year_tokens.append((y_full, price_val))
@@ -475,8 +478,16 @@ with main_tabs[0]:
                     else:
                         # αγνόησε μη έγκυρο token
                         pass
-            # Αν ο χρήστης άφησε κενό, σημαίνει διαγραφή των εγγραφών του τρέχοντος έτους
-            merged_tokens = keep_old + new_year_tokens
+            # Απομάκρυνση ακριβώς ίδιων διπλοεγγραφών τρέχοντος έτους
+            dedup: List[Tuple[int, Optional[float]]] = []
+            seen = set()
+            for y, p in new_year_tokens:
+                key = (int(y), float(p) if p is not None else None)
+                if key in seen:
+                    continue
+                seen.add(key)
+                dedup.append((y, p))
+            merged_tokens = keep_old + dedup
             updated.at[d, colname] = serialize_entries(merged_tokens)
         st.session_state["grid_df"] = updated.astype("string").fillna("")
         ok, err = save_grid_df(st.session_state["grid_df"])
