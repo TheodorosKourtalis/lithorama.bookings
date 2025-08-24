@@ -1124,8 +1124,12 @@ with main_tabs[1]:
             # Υπολογισμός ποσοστού ανά (έτος, μήνα)
             mix["total_month"] = mix.groupby(["year", "month"]) ["price"].transform("sum")
             mix["share"] = (mix["price"] / mix["total_month"]) * 100
+            # Επιλογή έτους για καθαρό γράφημα (ένα έτος τη φορά)
+            years_mix = sorted(mix["year"].dropna().astype(int).unique().tolist())
+            sel_year_mix = st.selectbox("Έτος", years_mix, index=len(years_mix)-1, key="mix_year_select")
+            mix_y = mix[mix["year"] == sel_year_mix].copy()
             st.vega_lite_chart(
-                mix,
+                mix_y,
                 {
                     "layer": [
                         {
@@ -1133,14 +1137,7 @@ with main_tabs[1]:
                             "encoding": {
                                 "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
                                 "y": {"field": "share", "type": "quantitative", "stack": "normalize", "title": "% μερίδιο"},
-                                "color": {"field": "floor", "type": "nominal", "title": "Όροφος"},
-                                "column": {"field": "year", "type": "ordinal", "title": "Έτος"},
-                                "tooltip": [
-                                    {"field": "year", "type": "ordinal"},
-                                    {"field": "month", "type": "ordinal"},
-                                    {"field": "floor", "type": "nominal"},
-                                    {"field": "share", "type": "quantitative", "title": "%"}
-                                ]
+                                "color": {"field": "floor", "type": "nominal", "title": "Όροφος"}
                             }
                         },
                         {
@@ -1148,17 +1145,34 @@ with main_tabs[1]:
                             "encoding": {
                                 "x": {"field": "month", "type": "ordinal", "sort": MONTHS},
                                 "y": {"field": "share", "type": "quantitative"},
+                                "color": {"field": "floor", "type": "nominal"}
+                            }
+                        },
+                        {
+                            "params": [{"name": "pick_mix", "select": {"type": "point", "fields": ["month"], "on": "click", "nearest": true, "clear": "dblclick"}}],
+                            "mark": {"type": "rule", "strokeDash": [4,4]},
+                            "transform": [{"filter": {"param": "pick_mix"}}],
+                            "encoding": {
+                                "x": {"field": "month", "type": "ordinal", "sort": MONTHS}
+                            }
+                        },
+                        {
+                            "mark": {"type": "text", "dy": -8},
+                            "transform": [{"filter": {"param": "pick_mix"}}],
+                            "encoding": {
+                                "x": {"field": "month", "type": "ordinal", "sort": MONTHS},
+                                "y": {"field": "share", "type": "quantitative"},
                                 "color": {"field": "floor", "type": "nominal"},
-                                "column": {"field": "year", "type": "ordinal"}
+                                "text": {"field": "share", "type": "quantitative", "format": ".1f"}
                             }
                         }
                     ],
-                    "width": 280,
+                    "width": "container",
                     "height": 260
                 },
                 use_container_width=True,
             )
-            explain("Τι ποσοστό εσόδων φέρνει κάθε όροφος κάθε μήνα — αποκαλύπτει μετατοπίσεις mix.")
+            explain("Μερίδιο εσόδων ανά όροφο για το επιλεγμένο έτος. Κλικ σε μήνα για ακριβές ποσοστό.")
         else:
             st.info("Δεν υπάρχουν δεδομένα για μερίδιο εσόδων.")
 
