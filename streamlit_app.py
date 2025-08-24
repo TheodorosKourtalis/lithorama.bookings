@@ -2,10 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 Εφαρμογή κρατήσεων (Απρίλιος–Οκτώβριος) με όμορφο UI και μόνιμη αποθήκευση σε SQLite.
-- Πίνακας: X=μήνες (Απρ–Οκτ), Y=ημέρες (1–31)
-- Κάθε κελί δέχεται πολλές τιμές, χωρισμένες με κόμμα, π.χ.: 22α, 23β, 24γ
-  * Μορφή: YY[α/β/γ] ή προαιρετικά YY[α/β/γ]:τιμή (π.χ. 23α:120)
-- Στατιστικά: πλήθος κρατήσεων ανά έτος, ανά όροφο, γραφήματα.
+- ΔΟΜΗ ΠΙΝΑΚΑ: Για ΚΑΘΕ μήνα υπάρχουν 3 ξεχωριστές στήλες (Ισόγειο, Α, Β).
+  Παράδειγμα στηλών: «Απρίλιος Ισόγειο», «Απρίλιος Α», «Απρίλιος Β», «Μάιος Ισόγειο», ...
+- Κάθε κελί δέχεται πολλές τιμές (μία ή περισσότερες κρατήσεις) χωρισμένες με κόμμα.
+  * Μορφή εγγραφής: YY ή προαιρετικά YY:τιμή (π.χ. 22 ή 22:120)
+  * ΔΕΝ γράφουμε πια α/β/γ μέσα στο κελί — ο όροφος προκύπτει από τη στήλη.
+- Στατιστικά: πλήθος κρατήσεων ανά έτος, ανά όροφο, και μέση τιμή.
 - Μόνιμη αποθήκευση: bookings.db στον τοπικό φάκελο.
 
 Οδηγίες εκτέλεσης:
@@ -16,7 +18,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -35,10 +37,20 @@ MONTHS = [
     "Σεπτέμβριος",
     "Οκτώβριος",
 ]
-DAYS = list(range(1, 32))  # 1–31 (μερικοί μήνες έχουν <31 αλλά κρατάμε κοινό πλέγμα)
+DAYS = list(range(1, 32))  # 1–31
 
-FLOORS = ["α", "β", "γ"]  # όροφοι
-FLOOR_LABELS = {"α": "Α", "β": "Β", "γ": "Γ"}
+# Όροφοι (εμφάνιση)
+FLOORS_DISPLAY = ["Ισόγειο", "Α", "Β"]
+
+# Χαρτογράφηση εμφάνισης -> τι θα γράφεται στη ΒΔ
+FLOOR_DB_VALUE = {
+    "Ισόγειο": "Ισόγειο",
+    "Α": "Α",
+    "Β": "Β",
+}
+
+# Παράγουμε τις στήλες του πλέγματος ως (Μήνας + space + Όροφος)
+GRID_COLUMNS = [f"{m} {f}" for m in MONTHS for f in FLOORS_DISPLAY]
 
 # --- Ρυθμίσεις σελίδας & CSS αισθητικής ---
 st.set_page_config(page_title=APP_TITLE, page_icon="📊", layout="wide")
@@ -56,30 +68,19 @@ CUSTOM_CSS = """
   border-radius: 18px;
   padding: 1.2rem 1.2rem;
 }
-.card h3 {
-  margin: 0 0 .6rem 0;
-}
+.card h3 { margin: 0 0 .6rem 0; }
 
 /***** Πίνακας *****/
-[data-testid="stDataFrame"] table {
-  border-radius: 12px !important;
-  overflow: hidden;
-}
+[data-testid="stDataFrame"] table { border-radius: 12px !important; overflow: hidden; }
 
 /***** Κουμπιά *****/
-.stButton > button {
-  border-radius: 999px;
-  padding: .6rem 1.1rem;
-  font-weight: 600;
-}
+.stButton > button { border-radius: 999px; padding: .6rem 1.1rem; font-weight: 600; }
 
 /***** Κεφαλίδα *****/
 h1.title {
-  font-weight: 800;
-  letter-spacing: -.3px;
+  font-weight: 800; letter-spacing: -.3px;
   background: linear-gradient(90deg, #111, #666);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
 }
 .small-muted {color: #6b7280; font-size: .9rem}
 </style>
@@ -89,24 +90,26 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 st.markdown(f"<h1 class='title'>{APP_TITLE}</h1>", unsafe_allow_html=True)
 st.markdown(
-    "<p class='small-muted'>Συμπλήρωσε κελιά με τιμές τύπου <code>22α</code> ή <code>22α:120</code>.\n"
-    "Διαχώρισε πολλαπλές εγγραφές με κόμμα· π.χ. <code>22α, 23β, 24γ</code>.</p>",
+    "<p class='small-muted'>Γράψε σε κάθε κελί πολλά στοιχεία χωρισμένα με κόμμα, π.χ. <code>22</code> ή <code>22:120</code>.\n"
+    "Δεν βάζουμε α/β/γ — αυτό βγαίνει από τη στήλη (Ισόγειο/Α/Β).</p>",
     unsafe_allow_html=True,
 )
 
-# ---------- Βοηθητικά DB ----------
+# ---------- Βάση δεδομένων ----------
 
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
 
+# Χρησιμοποιούμε νέο σχήμα για να αποφύγουμε συγκρούσεις με παλιά tables
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS cells (
-  month TEXT NOT NULL,
-  day   INTEGER NOT NULL,
+  month  TEXT    NOT NULL,
+  floor  TEXT    NOT NULL,
+  day    INTEGER NOT NULL,
   entries TEXT DEFAULT '',
-  PRIMARY KEY(month, day)
+  PRIMARY KEY(month, floor, day)
 );
 
 CREATE TABLE IF NOT EXISTS bookings (
@@ -127,82 +130,92 @@ with get_conn() as c:
     c.executescript(SCHEMA_SQL)
 
 # ---------- Parsing κρατήσεων ----------
-TOKEN_RE = re.compile(r"^\s*(\d{2})([αβγ])(?:\s*:\s*(\d+(?:\.\d+)?))?\s*$", re.IGNORECASE)
+# Δεχόμαστε: 2-ψηφιο έτος και προαιρετική τιμή: 22 ή 22:120
+TOKEN_RE = re.compile(r"^\s*(\d{2})(?:\s*:\s*(\d+(?:\.\d+)?))?\s*$")
 
-# Χαρτογράφηση 2-ψηφίου έτους -> 2000+ (π.χ. 22 -> 2022)
 
 def two_digit_to_year(two: int) -> int:
-    # Υποθέτουμε 20xx. Αν θες άλλο mapping, άλλαξέ το.
     return 2000 + two
 
 
-def parse_cell_entries(cell: str) -> List[Tuple[int, str, Optional[float]]]:
-    """Επιστρέφει λίστα από (year, floor, price?) για ένα κελί."""
+def parse_cell_entries(cell: str) -> List[Tuple[int, Optional[float]]]:
+    """Επιστρέφει λίστα από (year, price?) για ένα κελί (όροφος προκύπτει από τη στήλη)."""
     if cell is None:
         return []
     s = str(cell).strip()
     if not s:
         return []
-    out: List[Tuple[int, str, Optional[float]]] = []
+    out: List[Tuple[int, Optional[float]]] = []
     for raw in re.split(r",|;|/|\\n", s):
         token = raw.strip()
         if not token:
             continue
         m = TOKEN_RE.match(token)
         if not m:
-            # Αγνόησε μη έγκυρα τμήματα αντί να σπάει όλη η αποθήκευση
+            # Αγνόησε μη έγκυρα τμήματα
             continue
-        yy, floor, price = m.group(1), m.group(2).lower(), m.group(3)
+        yy, price = m.group(1), m.group(2)
         year = two_digit_to_year(int(yy))
         price_val = float(price) if price is not None else None
-        out.append((year, floor, price_val))
+        out.append((year, price_val))
     return out
+
+# ---------- Βοηθητικά για στήλες ----------
+
+def split_month_floor(col: str) -> Tuple[str, str]:
+    """Δέχεται στήλη τύπου 'Απρίλιος Α' και επιστρέφει (month, floor-display)."""
+    # Δεδομένου ότι τα floor tokens δεν περιέχουν κενά, το split από τα δεξιά είναι ασφαλές
+    month, floor = col.rsplit(" ", 1)
+    return month, floor
 
 # ---------- Φόρτωση/Αποθήκευση πλέγματος ----------
 
-def load_grid_df() -> pd.DataFrame:
-    """Φορτώνει το πλέγμα από τη βάση. Αν δεν υπάρχουν δεδομένα, δημιουργεί κενό DF."""
-    with get_conn() as c:
-        df = pd.read_sql_query("SELECT month, day, entries FROM cells", c)
-    if df.empty:
-        grid = pd.DataFrame("", index=DAYS, columns=MONTHS)
-        grid.index.name = "Ημέρα"
-        return grid
-    # Ανακατασκευή πλέγματος
-    grid = pd.DataFrame("", index=DAYS, columns=MONTHS)
-    for _, row in df.iterrows():
-        m = row["month"]
-        d = int(row["day"])
-        if m in grid.columns and d in grid.index:
-            grid.at[d, m] = row["entries"] or ""
+def empty_grid() -> pd.DataFrame:
+    grid = pd.DataFrame("", index=DAYS, columns=GRID_COLUMNS)
     grid.index.name = "Ημέρα"
     return grid
 
 
+def load_grid_df() -> pd.DataFrame:
+    with get_conn() as c:
+        df = pd.read_sql_query("SELECT month, floor, day, entries FROM cells", c)
+    if df.empty:
+        return empty_grid()
+    grid = empty_grid()
+    for _, row in df.iterrows():
+        col = f"{row['month']} {row['floor']}"
+        d = int(row["day"])
+        if col in grid.columns and d in grid.index:
+            grid.at[d, col] = row["entries"] or ""
+    return grid
+
+
 def save_grid_df(grid: pd.DataFrame) -> None:
-    """Αποθηκεύει τον πίνακα στο cells και αναδημιουργεί τα bookings (parsed)."""
-    # Αποθήκευση raw κελιών
     with get_conn() as c:
         cur = c.cursor()
-        # Upsert σε κάθε κελί
+        # Upsert όλων των κελιών
         for d in grid.index:
-            for m in grid.columns:
-                entries = (grid.at[d, m] or "").strip()
+            for col in grid.columns:
+                entries = (grid.at[d, col] or "").strip()
+                month, floor_disp = split_month_floor(col)
+                floor_db = FLOOR_DB_VALUE[floor_disp]
                 cur.execute(
-                    "INSERT INTO cells(month, day, entries) VALUES(?,?,?)\n"
-                    "ON CONFLICT(month,day) DO UPDATE SET entries=excluded.entries",
-                    (m, int(d), entries),
+                    "INSERT INTO cells(month, floor, day, entries) VALUES(?,?,?,?)\n"
+                    "ON CONFLICT(month,floor,day) DO UPDATE SET entries=excluded.entries",
+                    (month, floor_db, int(d), entries),
                 )
-        # Ξαναχτίσε bookings (σβήσε όλα και ξαναπέρασέ τα - απλό και ασφαλές για αυτό το μέγεθος)
+        # Αναδημιουργία bookings
         cur.execute("DELETE FROM bookings")
         for d in grid.index:
-            for m in grid.columns:
-                entries = (grid.at[d, m] or "").strip()
+            for col in grid.columns:
+                entries = (grid.at[d, col] or "").strip()
+                month, floor_disp = split_month_floor(col)
+                floor_db = FLOOR_DB_VALUE[floor_disp]
                 parsed = parse_cell_entries(entries)
-                for (year, floor, price) in parsed:
+                for (year, price) in parsed:
                     cur.execute(
                         "INSERT INTO bookings(year, floor, month, day, price) VALUES(?,?,?,?,?)",
-                        (year, floor, m, int(d), price),
+                        (year, floor_db, month, int(d), price),
                     )
         c.commit()
 
@@ -210,10 +223,10 @@ def save_grid_df(grid: pd.DataFrame) -> None:
 with st.sidebar:
     st.header("⚙️ Ρυθμίσεις & Ενέργειες")
     st.markdown(
-        "*Μορφή τιμής:* <code>YY[α/β/γ]</code> ή προαιρετικά <code>YY[α/β/γ]:τιμή</code>.",
+        "*Μορφή τιμής:* <code>YY</code> ή προαιρετικά <code>YY:τιμή</code> (π.χ. <code>22</code> ή <code>22:120</code>).",
         unsafe_allow_html=True,
     )
-    st.caption("Παράδειγμα: 22α, 23α, 24β:150")
+    st.caption("Παράδειγμα: 22, 22:150, 23")
 
     if st.button("💾 Αποθήκευση", type="primary"):
         save_grid_df(st.session_state["grid_df"])
@@ -235,11 +248,15 @@ with st.sidebar:
 if "grid_df" not in st.session_state:
     st.session_state["grid_df"] = load_grid_df()
 
-st.markdown("""
+st.markdown(
+    """
 <div class="card">
-  <h3>🗂️ Πίνακας Κρατήσεων (γράψε σε κελιά: π.χ. <code>22α, 23β</code>)</h3>
+  <h3>🗂️ Πίνακας Κρατήσεων (στήλες ανά Μήνα×Όροφο: Ισόγειο/Α/Β)</h3>
+  <div class="small-muted">Γράψε σε κελιά τιμές όπως <code>22</code> ή <code>22:120</code>. Χώρισε πολλαπλές τιμές με κόμμα.</div>
 </div>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 edited = st.data_editor(
     st.session_state["grid_df"],
@@ -247,17 +264,19 @@ edited = st.data_editor(
     use_container_width=True,
     key="booking_editor",
 )
-# Ενημέρωσε το state με την τρέχουσα μορφή
+# Ενημέρωση state
 st.session_state["grid_df"] = edited
 
-st.markdown("""
+# ---------- Στατιστικά ----------
+st.markdown(
+    """
 <div class="card">
   <h3>📈 Στατιστικά</h3>
   <div class="small-muted">Υπολογίζονται από τα αποθηκευμένα δεδομένα (πάτα «Αποθήκευση» για ενημέρωση).</div>
 </div>
-""", unsafe_allow_html=True)
-
-col1, col2, col3 = st.columns([1,1,1])
+""",
+    unsafe_allow_html=True,
+)
 
 with get_conn() as c:
     stats_df = pd.read_sql_query("SELECT year, floor, month, day, price FROM bookings", c)
@@ -265,38 +284,45 @@ with get_conn() as c:
 if stats_df.empty:
     st.info("Δεν υπάρχουν αποθηκευμένες κρατήσεις ακόμη.")
 else:
-    # --- κρατήσεις ανά έτος ---
-    ανα_ετος = stats_df.groupby("year").size().reset_index(name="κρατήσεις")
+    # Σύνολα ανά έτος
+    per_year = stats_df.groupby("year").size().reset_index(name="κρατήσεις")
+    # Σύνολα ανά έτος & όροφο
+    per_year_floor = (
+        stats_df.groupby(["year", "floor"]).size().reset_index(name="κρατήσεις")
+    )
 
-    # --- κρατήσεις ανά έτος & όροφο ---
-    ανα_ετος_οροφος = stats_df.groupby(["year", "floor"]).size().reset_index(name="κρατήσεις")
-
-    # --- μετρικά ---
-    with col1:
-        συνολο = int(ανα_ετος["κρατήσεις"].sum()) if not ανα_ετος.empty else 0
-        st.metric("Σύνολο κρατήσεων (όλα τα έτη)", f"{συνολο}")
-
-    with col2:
-        κ22 = int(ανα_ετος.loc[ανα_ετος["year"] == 2022, "κρατήσεις"].sum()) if 2022 in ανα_ετος["year"].values else 0
-        κ23 = int(ανα_ετος.loc[ανα_ετος["year"] == 2023, "κρατήσεις"].sum()) if 2023 in ανα_ετος["year"].values else 0
-        st.metric("2022 vs 2023", f"{κ22} → {κ23}")
-
-    with col3:
-        συνολο_οροφοι = stats_df.groupby("floor").size()
-        κειμενο = ", ".join(f"{FLOOR_LABELS.get(k,k)}: {int(v)}" for k,v in συνολο_οροφοι.items()) if not συνολο_οροφοι.empty else "—"
-        st.metric("Ανά όροφο (σύνολο)", κειμενο)
-
-    # --- γραφήματα ---
-    st.markdown("**Κρατήσεις ανά έτος**")
-    st.bar_chart(ανα_ετος.set_index("year")["κρατήσεις"])
-
-    st.markdown("**Κρατήσεις ανά έτος & όροφο**")
-    πινακας = ανα_ετος_οροφος.pivot(index="year", columns="floor", values="κρατήσεις").fillna(0).astype(int)
-    πινακας = πινακας.rename(columns=FLOOR_LABELS)  # Α/Β/Γ
-    st.bar_chart(πινακας)
-
-    # --- μέσες τιμές ---
+    # Μέσος όρος τιμής (αν έχουν εισαχθεί τιμές)
+    price_info = None
     if stats_df["price"].notna().any():
-        μεσες = stats_df.dropna(subset=["price"]).groupby("year")["price"].mean().reset_index()
-        st.markdown("**Μέση τιμή ανά έτος** (μόνο όπου δηλώθηκε τιμή)")
-        st.line_chart(μεσες.set_index("year")["price"])
+        price_info = (
+            stats_df.dropna(subset=["price"]).groupby("year")["price"].mean().reset_index()
+        )
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        total_all = int(per_year["κρατήσεις"].sum()) if not per_year.empty else 0
+        st.metric("Σύνολο κρατήσεων (όλα τα έτη)", f"{total_all}")
+    with col2:
+        latest_year = int(per_year["year"].max()) if not per_year.empty else None
+        if latest_year:
+            latest_cnt = int(per_year.loc[per_year["year"] == latest_year, "κρατήσεις"].sum())
+            st.metric(f"Κρατήσεις {latest_year}", f"{latest_cnt}")
+        else:
+            st.metric("Κρατήσεις", "0")
+    with col3:
+        if price_info is not None and not price_info.empty:
+            last_price_year = int(price_info["year"].max())
+            mean_price = float(price_info.loc[price_info["year"] == last_price_year, "price"].iloc[0])
+            st.metric(f"Μέση τιμή ({last_price_year})", f"{mean_price:.2f}")
+        else:
+            st.metric("Μέση τιμή", "—")
+
+    st.subheader("Ανά έτος")
+    st.dataframe(per_year, use_container_width=True)
+
+    st.subheader("Ανά έτος & όροφο")
+    st.dataframe(per_year_floor, use_container_width=True)
+
+    if price_info is not None and not price_info.empty:
+        st.subheader("Μέση τιμή ανά έτος")
+        st.dataframe(price_info.rename(columns={"price": "μέση_τιμή"}), use_container_width=True)
