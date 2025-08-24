@@ -185,6 +185,18 @@ def parse_cell_entries(cell: str) -> List[Tuple[int, Optional[float]]]:
         out.append((year, price_val))
     return out
 
+# --- Serialize entries helper ---
+def serialize_entries(entries: List[Tuple[int, Optional[float]]]) -> str:
+    """Δέχεται λίστα (year, price?) και επιστρέφει tokens τύπου 'YY' ή 'YY:price' χωρισμένα με κόμμα."""
+    toks = []
+    for (y, p) in entries:
+        yy = int(y) % 100
+        if p is None:
+            toks.append(f"{yy:02d}")
+        else:
+            toks.append(f"{yy:02d}:{float(p):g}")
+    return ",".join(toks)
+
 # ---------- Βοηθητικά για στήλες ----------
 
 def split_month_floor(col: str) -> Tuple[str, str]:
@@ -346,6 +358,21 @@ with st.sidebar:
         except Exception as e:
             st.error(f"Αποτυχία ανάγνωσης CSV: {e}")
 
+    st.markdown("—")
+    st.subheader("Καθαρισμός")
+    month_to_clear = st.selectbox("Μήνας για καθάρισμα", MONTHS)
+    if st.button("🧹 Καθάρισε τον μήνα (όλα τα έτη)"):
+        base = st.session_state.get("grid_df", empty_grid()).copy()
+        for f in FLOORS_DISPLAY:
+            col = f"{month_to_clear} {f}"
+            if col in base.columns:
+                base.loc[:, col] = ""
+        st.session_state["grid_df"] = _norm_df(base)
+        st.success(f"Καθαρίστηκε ο {month_to_clear}. Πάτα Αποθήκευση για να γραφτεί στη βάση.")
+    if st.button("🧨 Καθάρισε ΟΛΟΥΣ τους μήνες (όλα τα έτη)"):
+        st.session_state["grid_df"] = empty_grid()
+        st.warning("Καθαρίστηκαν όλοι οι μήνες. Πάτα Αποθήκευση για να γραφτεί στη βάση.")
+
 # ---------- Πίνακας (HTML‑styled) με φόρμα αποθήκευσης ----------
 main_tabs = st.tabs(["Καταχώρηση", "Στατιστικά"])  # δύο σελίδες: εισαγωγή & στατιστικά
 
@@ -362,6 +389,11 @@ with main_tabs[0]:
     """,
         unsafe_allow_html=True,
     )
+
+    # Επιλογή Έτους για καταχώρηση (ώστε ο χρήστης να γράφει μόνο τιμές π.χ. 100)
+    current_year = st.number_input("Έτος καταχώρησης", min_value=2000, max_value=2100, value=pd.Timestamp.today().year, step=1)
+    yy_current = int(current_year) % 100
+    st.caption("Αν γράψεις μόνο αριθμούς (π.χ. 100), θα θεωρηθεί τιμή για το επιλεγμένο έτος.")
 
     # Βοηθητική για labels
     def _label(month: str, floor: str, day: int) -> str:
@@ -396,8 +428,34 @@ with main_tabs[0]:
     if submitted:
         updated = st.session_state["grid_df"].copy()
         for (d, colname), v in new_values.items():
-            if colname in updated.columns and d in updated.index:
-                updated.at[d, colname] = str(v or "")
+            if colname not in updated.columns or d not in updated.index:
+                continue
+            new_text = str(v or "").strip()
+            # Παλιό περιεχόμενο κελιάς
+            old_text = str(updated.at[d, colname] or "").strip()
+            old_parsed = parse_cell_entries(old_text)
+            # Κρατάμε tokens από παλιά που ΔΕΝ ανήκουν στο τρέχον έτος
+            keep_old = [(y, p) for (y, p) in old_parsed if (int(y) % 100) != yy_current]
+            # Νέα tokens από input: μπορεί να είναι με έτος (YY ή YY:price) ή μόνο τιμές
+            entered = [t.strip() for t in re.split(r",|;|/|\n", new_text) if t.strip()]
+            new_year_tokens: List[Tuple[int, Optional[float]]] = []
+            for tok in entered:
+                m = TOKEN_RE.match(tok)
+                if m:
+                    yy, price = m.group(1), m.group(2)
+                    y_full = 2000 + int(yy)
+                    price_val = float(price) if price is not None else None
+                    new_year_tokens.append((y_full, price_val))
+                else:
+                    # Μόνο τιμή → δέσε την στο επιλεγμένο έτος
+                    if re.fullmatch(r"\d+(?:\.\d+)?", tok):
+                        new_year_tokens.append((int(current_year), float(tok)))
+                    else:
+                        # αγνόησε μη έγκυρο token
+                        pass
+            # Αν ο χρήστης άφησε κενό, σημαίνει διαγραφή των εγγραφών του τρέχοντος έτους
+            merged_tokens = keep_old + new_year_tokens
+            updated.at[d, colname] = serialize_entries(merged_tokens)
         st.session_state["grid_df"] = updated.astype("string").fillna("")
         ok, err = save_grid_df(st.session_state["grid_df"])
         if ok:
