@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 import re
+import os
 import sqlite3
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -25,7 +26,13 @@ import pandas as pd
 import streamlit as st
 
 APP_TITLE = "📅 Κρατήσεις Διαμερισμάτων (Απρ–Οκτ)"
-DB_PATH = Path("bookings.db")
+# Χρησιμοποιούμε επίμονο φάκελο στο Streamlit Cloud (/mount/data) αν υπάρχει/είναι εγγράψιμος
+_DATA_DIR = Path("/mount/data")
+if _DATA_DIR.exists() and os.access(_DATA_DIR, os.W_OK):
+    DB_PATH = _DATA_DIR / "bookings.db"
+else:
+    DB_PATH = Path("bookings.db")
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # Μήνες (Απρίλιος–Οκτώβριος)
 MONTHS = [
@@ -62,25 +69,23 @@ CUSTOM_CSS = """
 
 /***** Κάρτες *****/
 .card {
-  background: linear-gradient(145deg, rgba(255,255,255,0.9), rgba(245,247,250,0.9));
-  border: 1px solid rgba(0,0,0,0.06);
-  box-shadow: 0 8px 30px rgba(0,0,0,0.06);
-  border-radius: 18px;
-  padding: 1.2rem 1.2rem;
+  background: #ffffff; /* ουδέτερο λευκό */
+  border: 1px solid rgba(0,0,0,0.08);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+  border-radius: 12px;
+  padding: 1rem 1rem;
 }
-.card h3 { margin: 0 0 .6rem 0; }
+.card h3 { margin: 0 0 .6rem 0; color: inherit; }
 
 /***** Πίνακας *****/
-[data-testid="stDataFrame"] table { border-radius: 12px !important; overflow: hidden; }
+[data-testid="stDataFrame"] table { border-radius: 8px !important; overflow: hidden; }
 
 /***** Κουμπιά *****/
-.stButton > button { border-radius: 999px; padding: .6rem 1.1rem; font-weight: 600; }
+.stButton > button { border-radius: 10px; padding: .5rem .9rem; font-weight: 600; }
 
 /***** Κεφαλίδα *****/
 h1.title {
-  font-weight: 800; letter-spacing: -.3px;
-  background: linear-gradient(90deg, #111, #666);
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  font-weight: 800; letter-spacing: -.2px; color: inherit; /* χωρίς gradients */
 }
 .small-muted {color: #6b7280; font-size: .9rem}
 </style>
@@ -98,7 +103,8 @@ st.markdown(
 # ---------- Βάση δεδομένων ----------
 
 def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    # check_same_thread False για να μην σκάει σε reruns/πολλαπλά threads του Streamlit
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
 
@@ -177,8 +183,17 @@ def empty_grid() -> pd.DataFrame:
 
 
 def load_grid_df() -> pd.DataFrame:
-    with get_conn() as c:
-        df = pd.read_sql_query("SELECT month, floor, day, entries FROM cells", c)
+    try:
+        with get_conn() as c:
+            df = pd.read_sql_query("SELECT month, floor, day, entries FROM cells", c)
+    except Exception:
+        # Αν για οποιονδήποτε λόγο λείπει ο πίνακας ή υπάρχει παλιά έκδοση, ξαναφτιάξ’ τον και δώσε κενό πλέγμα
+        try:
+            with get_conn() as c:
+                c.executescript(SCHEMA_SQL)
+        except Exception:
+            pass
+        return empty_grid()
     if df.empty:
         return empty_grid()
     grid = empty_grid()
@@ -194,33 +209,36 @@ def load_grid_df() -> pd.DataFrame:
 
 def save_grid_df(grid: pd.DataFrame) -> None:
     grid = grid.astype("string")
-    with get_conn() as c:
-        cur = c.cursor()
-        # Upsert όλων των κελιών
-        for d in grid.index:
-            for col in grid.columns:
-                entries = (grid.at[d, col] or "").strip()
-                month, floor_disp = split_month_floor(col)
-                floor_db = FLOOR_DB_VALUE[floor_disp]
-                cur.execute(
-                    "INSERT INTO cells(month, floor, day, entries) VALUES(?,?,?,?)\n"
-                    "ON CONFLICT(month,floor,day) DO UPDATE SET entries=excluded.entries",
-                    (month, floor_db, int(d), entries),
-                )
-        # Αναδημιουργία bookings
-        cur.execute("DELETE FROM bookings")
-        for d in grid.index:
-            for col in grid.columns:
-                entries = (grid.at[d, col] or "").strip()
-                month, floor_disp = split_month_floor(col)
-                floor_db = FLOOR_DB_VALUE[floor_disp]
-                parsed = parse_cell_entries(entries)
-                for (year, price) in parsed:
+    try:
+        with get_conn() as c:
+            cur = c.cursor()
+            # Upsert όλων των κελιών
+            for d in grid.index:
+                for col in grid.columns:
+                    entries = (grid.at[d, col] or "").strip()
+                    month, floor_disp = split_month_floor(col)
+                    floor_db = FLOOR_DB_VALUE[floor_disp]
                     cur.execute(
-                        "INSERT INTO bookings(year, floor, month, day, price) VALUES(?,?,?,?,?)",
-                        (year, floor_db, month, int(d), price),
+                        "INSERT INTO cells(month, floor, day, entries) VALUES(?,?,?,?)\n"
+                        "ON CONFLICT(month,floor,day) DO UPDATE SET entries=excluded.entries",
+                        (month, floor_db, int(d), entries),
                     )
-        c.commit()
+            # Αναδημιουργία bookings
+            cur.execute("DELETE FROM bookings")
+            for d in grid.index:
+                for col in grid.columns:
+                    entries = (grid.at[d, col] or "").strip()
+                    month, floor_disp = split_month_floor(col)
+                    floor_db = FLOOR_DB_VALUE[floor_disp]
+                    parsed = parse_cell_entries(entries)
+                    for (year, price) in parsed:
+                        cur.execute(
+                            "INSERT INTO bookings(year, floor, month, day, price) VALUES(?,?,?,?,?)",
+                            (year, floor_db, month, int(d), price),
+                        )
+            c.commit()
+    except Exception as e:
+        st.error("Σφάλμα αποθήκευσης στη βάση. Δοκίμασε ξανά.")
 
 # ---------- Sidebar (λειτουργίες) ----------
 with st.sidebar:
