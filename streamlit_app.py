@@ -24,17 +24,8 @@ from typing import List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
-try:
-    import openpyxl  # for reading .xlsx
-    HAS_OPENPYXL = True
-except Exception:
-    HAS_OPENPYXL = False
+import openpyxl
 
-try:
-    import xlsxwriter  # for writing .xlsx
-    HAS_XLSXWRITER = True
-except Exception:
-    HAS_XLSXWRITER = False
 APP_TITLE = "📅 Κρατήσεις Διαμερισμάτων (Απρ–Οκτ)"
 # Χρησιμοποιούμε επίμονο φάκελο στο Streamlit Cloud (/mount/data) αν υπάρχει/είναι εγγράψιμος
 _DATA_DIR = Path("/mount/data")
@@ -83,6 +74,32 @@ GRID_COLUMNS = [f"{m} {f}" for m in MONTHS for f in FLOORS_DISPLAY]
 
 DATA_DIR = Path(".")
 BOOKINGS_XLSX = DATA_DIR / "bookings.xlsx"
+BOOKINGS_CSV = DATA_DIR / "bookings.csv"
+
+# Helper to load bookings from CSV (prefer) or XLSX (fallback)
+def load_bookings_df() -> pd.DataFrame:
+    """Load combined bookings for statistics. Prefer CSV; fallback to XLSX; else empty."""
+    cols = ["year", "floor", "month", "day", "price"]
+    if BOOKINGS_CSV.exists():
+        try:
+            df = pd.read_csv(BOOKINGS_CSV)
+            # basic column normalization
+            for c in cols:
+                if c not in df.columns:
+                    df[c] = pd.Series(dtype="float64" if c in ("year","day","price") else "string")
+            return df[cols]
+        except Exception:
+            pass
+    if BOOKINGS_XLSX.exists():
+        try:
+            df = pd.read_excel(BOOKINGS_XLSX, sheet_name="bookings")
+            for c in cols:
+                if c not in df.columns:
+                    df[c] = pd.Series(dtype="float64" if c in ("year","day","price") else "string")
+            return df[cols]
+        except Exception:
+            pass
+    return pd.DataFrame(columns=cols)
 TOKEN_DEV_RE = re.compile(r"^(\d+(?:\.\d+)?):(\d{4});([A-Z]+)$")
 
 def month_en_of(month_gr: str) -> str:
@@ -606,19 +623,28 @@ with main_tabs[0]:
             st.error(f"Σφάλμα αποθήκευσης: {err}")
 
         # Note for per-month files (above download buttons)
-        st.info("Για το επιλεγμένο έτος δημιουργήθηκαν/ενημερώθηκαν αρχεία ανά μήνα: dev_{YYYY}_{MONTH}.xlsx. Το bookings.xlsx είναι ο ενιαίος πίνακας για όλα τα έτη/μήνες.")
+        st.info("Για το επιλεγμένο έτος δημιουργήθηκαν/ενημερώθηκαν αρχεία ανά μήνα: dev_{YYYY}_{MONTH}.xlsx. Το bookings.xlsx είναι ο ενιαίος πίνακας για όλα τα έτη/μήνες. Τα στατιστικά διαβάζουν από το bookings.csv")
 
         # Προσφέρουμε export μετά την επιτυχή αποθήκευση
         if ok:
-            if BOOKINGS_XLSX.exists():
-                bookings = pd.read_excel(BOOKINGS_XLSX, sheet_name="bookings")
-                csv_bytes = bookings.to_csv(index=False).encode("utf-8-sig")
+            # Αν υπάρχει ήδη έτοιμο CSV, δώσ' το απευθείας· αλλιώς φτιάξ' το από το XLSX
+            if BOOKINGS_CSV.exists():
+                st.download_button(
+                    "⬇️ Λήψη bookings.csv",
+                    data=open(BOOKINGS_CSV, "rb").read(),
+                    file_name="bookings.csv",
+                    mime="text/csv",
+                )
+            elif BOOKINGS_XLSX.exists():
+                _tmp_df = pd.read_excel(BOOKINGS_XLSX, sheet_name="bookings")
+                csv_bytes = _tmp_df.to_csv(index=False).encode("utf-8-sig")
                 st.download_button(
                     "⬇️ Λήψη bookings.csv",
                     data=csv_bytes,
                     file_name="bookings.csv",
                     mime="text/csv",
                 )
+            st.caption("Τα στατιστικά βασίζονται στο bookings.csv.")
 
 # ---------- Στατιστικά (δεύτερη σελίδα) ----------
 with main_tabs[1]:
@@ -626,21 +652,22 @@ with main_tabs[1]:
         """
     <div class="card">
       <h3>📈 Στατιστικά Κρατήσεων</h3>
-      <div class="small-muted">Τα στατιστικά βασίζονται στα δεδομένα που έχουν αποθηκευτεί στη βάση.</div>
+      <div class="small-muted">Τα στατιστικά βασίζονται στα δεδομένα που έχουν αποθηκευτεί στο bookings.csv.</div>
     </div>
     """,
         unsafe_allow_html=True,
     )
-    try:
-        with get_conn() as c:
-            stats_df = pd.read_sql_query("SELECT year, floor, month, day, price FROM bookings", c)
-    except Exception as e:
-        stats_df = pd.DataFrame(columns=["year", "floor", "month", "day", "price"])  # κενό/ασφαλές
-        st.error(f"Δεν ήταν δυνατή η ανάγνωση στατιστικών: {e}")
-
+    stats_df = load_bookings_df()
     if stats_df.empty:
-        st.info("Δεν υπάρχουν ακόμη αποθηκευμένες κρατήσεις.")
+        st.info("Δεν υπάρχουν ακόμη αποθηκευμένες κρατήσεις (bookings.csv).")
     else:
+        # Type safety / coercion
+        stats_df["year"] = pd.to_numeric(stats_df["year"], errors="coerce").astype("Int64")
+        stats_df["day"] = pd.to_numeric(stats_df["day"], errors="coerce").astype("Int64")
+        stats_df["price"] = pd.to_numeric(stats_df["price"], errors="coerce")
+        stats_df["floor"] = stats_df["floor"].astype("string")
+        stats_df["month"] = stats_df["month"].astype("string")
+
         # ---- Φίλτρα ----
         floors_sel = st.multiselect("Όροφοι", FLOORS_DISPLAY, default=FLOORS_DISPLAY)
         years_available = (
