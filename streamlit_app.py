@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import openpyxl
+
 APP_TITLE = "📅 Κρατήσεις Διαμερισμάτων (Απρ–Οκτ)"
 # Χρησιμοποιούμε επίμονο φάκελο στο Streamlit Cloud (/mount/data) αν υπάρχει/είναι εγγράψιμος
 _DATA_DIR = Path("/mount/data")
