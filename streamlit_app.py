@@ -440,12 +440,11 @@ def _frames_equal(a: pd.DataFrame, b: pd.DataFrame) -> bool:
 
 # ---------- Sidebar (λειτουργίες) ----------
 with st.sidebar:
-    # Use unified selected year from session_state (no separate sidebar picker)
-    sidebar_year = int(st.session_state.get("selected_year", 2024))
+    # Ανεξάρτητη επιλογή έτους για τις λειτουργίες του Sidebar
+    sidebar_year = st.selectbox("Έτος (Sidebar)", [2022, 2023, 2024, 2025], index=2, key="sidebar_year_select")
     session_key = f"grid_df::{sidebar_year}"
     if session_key not in st.session_state:
-        st.session_state[session_key] = load_grid_df_for_year(sidebar_year)
-    st.caption(f"Ενεργό έτος: {sidebar_year}")
+        st.session_state[session_key] = load_grid_df_for_year(int(sidebar_year))
 
     st.header("ℹ️ Οδηγίες")
     st.markdown(
