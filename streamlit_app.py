@@ -1031,8 +1031,14 @@ with main_tabs[1]:
             occ["days_in_month"] = occ.apply(lambda r: calendar.monthrange(int(r["year"]), int(r["month_num"]))[1], axis=1)
             occ["occupancy"] = (occ["days_booked"] / occ["days_in_month"]) * 100
             occ["month"] = pd.Categorical(occ["month"], categories=MONTHS, ordered=True)
+            # Επιλογή έτους για καθαρό γράφημα (ένα έτος τη φορά)
+            years_occ = sorted(occ["year"].dropna().astype(int).unique().tolist())
+            sel_year = st.selectbox("Έτος", years_occ, index=len(years_occ)-1, key="occ_year_select")
+            occ_y = occ[occ["year"] == sel_year].copy()
+            # Ταξινόμηση μηνών
+            occ_y["month"] = pd.Categorical(occ_y["month"], categories=MONTHS, ordered=True)
             st.vega_lite_chart(
-                occ,
+                occ_y,
                 {
                     "layer": [
                         {
@@ -1040,8 +1046,7 @@ with main_tabs[1]:
                             "encoding": {
                                 "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
                                 "y": {"field": "occupancy", "type": "quantitative", "title": "% Πληρότητα"},
-                                "color": {"field": "floor", "type": "nominal", "title": "Όροφος"},
-                                "column": {"field": "year", "type": "ordinal", "title": "Έτος"}
+                                "color": {"field": "floor", "type": "nominal", "title": "Όροφος"}
                             }
                         },
                         {
@@ -1049,8 +1054,7 @@ with main_tabs[1]:
                             "encoding": {
                                 "x": {"field": "month", "type": "ordinal", "sort": MONTHS},
                                 "y": {"field": "occupancy", "type": "quantitative"},
-                                "color": {"field": "floor", "type": "nominal"},
-                                "column": {"field": "year", "type": "ordinal"}
+                                "color": {"field": "floor", "type": "nominal"}
                             }
                         },
                         {
@@ -1058,8 +1062,7 @@ with main_tabs[1]:
                             "mark": {"type": "rule", "strokeDash": [4,4]},
                             "transform": [{"filter": {"param": "pick2"}}],
                             "encoding": {
-                                "x": {"field": "month", "type": "ordinal", "sort": MONTHS},
-                                "column": {"field": "year", "type": "ordinal"}
+                                "x": {"field": "month", "type": "ordinal", "sort": MONTHS}
                             }
                         },
                         {
@@ -1069,17 +1072,16 @@ with main_tabs[1]:
                                 "x": {"field": "month", "type": "ordinal", "sort": MONTHS},
                                 "y": {"field": "occupancy", "type": "quantitative"},
                                 "color": {"field": "floor", "type": "nominal"},
-                                "column": {"field": "year", "type": "ordinal"},
                                 "text": {"field": "occupancy", "type": "quantitative", "format": ".1f"}
                             }
                         }
                     ],
-                    "width": 280,
+                    "width": "container",
                     "height": 260
                 },
                 use_container_width=True,
             )
-            explain("Ποσοστό ημερών με τουλάχιστον μία κράτηση. Δείχνει δυναμική ζήτησης ανά μήνα/όροφο.")
+            explain("Πληρότητα ανά μήνα για το επιλεγμένο έτος. Κάνε κλικ σε μήνα για ακριβές ποσοστό.")
         else:
             st.info("Δεν βρέθηκαν δεδομένα για υπολογισμό πληρότητας.")
 
