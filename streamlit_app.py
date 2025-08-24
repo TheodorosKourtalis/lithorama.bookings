@@ -24,7 +24,6 @@ from typing import List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
 
 APP_TITLE = "📅 Κρατήσεις Διαμερισμάτων (Απρ–Οκτ)"
 # Χρησιμοποιούμε επίμονο φάκελο στο Streamlit Cloud (/mount/data) αν υπάρχει/είναι εγγράψιμος
@@ -508,26 +507,46 @@ with main_tabs[1]:
 
         # Θερμικός χάρτης: Ημέρα × Μήνας (πλήθος κρατήσεων)
         st.subheader("Heatmap: Ημέρα × Μήνας")
-        grid_counts = (
-            fdf.groupby(["month", "day"]).size().unstack(fill_value=0).reindex(index=MONTHS)
+        hm = fdf.groupby(["month", "day"]).size().reset_index(name="count")
+        # Εξασφάλιση σειράς μηνών
+        hm["month"] = pd.Categorical(hm["month"], categories=MONTHS, ordered=True)
+        st.vega_lite_chart(
+            hm,
+            {
+                "mark": "rect",
+                "encoding": {
+                    "x": {"field": "day", "type": "ordinal", "title": "Ημέρα"},
+                    "y": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
+                    "color": {"field": "count", "type": "quantitative", "title": "Κρατήσεις"},
+                    "tooltip": [
+                        {"field": "month", "type": "ordinal", "title": "Μήνας"},
+                        {"field": "day", "type": "ordinal", "title": "Ημέρα"},
+                        {"field": "count", "type": "quantitative", "title": "Κρατήσεις"}
+                    ]
+                },
+                "width": "container",
+                "height": 280
+            },
+            use_container_width=True,
         )
-        fig1, ax1 = plt.subplots()
-        im = ax1.imshow(grid_counts.values, aspect="auto")  # default colormap
-        ax1.set_yticks(range(len(MONTHS)))
-        ax1.set_yticklabels(MONTHS)
-        ax1.set_xlabel("Ημέρα")
-        ax1.set_ylabel("Μήνας")
-        st.pyplot(fig1, clear_figure=True)
 
         # Κατανομή τιμών (αν υπάρχουν)
         if fdf["price"].notna().any():
             st.subheader("Κατανομή Τιμών")
-            prices = fdf["price"].dropna()
-            fig2, ax2 = plt.subplots()
-            ax2.hist(prices, bins=20)
-            ax2.set_xlabel("Τιμή")
-            ax2.set_ylabel("Συχνότητα")
-            st.pyplot(fig2, clear_figure=True)
+            prices_df = fdf[["price"]].dropna()
+            st.vega_lite_chart(
+                prices_df,
+                {
+                    "mark": "bar",
+                    "encoding": {
+                        "x": {"field": "price", "type": "quantitative", "bin": {"maxbins": 20}, "title": "Τιμή"},
+                        "y": {"aggregate": "count", "type": "quantitative", "title": "Συχνότητα"}
+                    },
+                    "width": "container",
+                    "height": 240
+                },
+                use_container_width=True,
+            )
 
             st.subheader("Μέση τιμή ανά έτος")
             st.line_chart(price_mean.set_index("year"))
