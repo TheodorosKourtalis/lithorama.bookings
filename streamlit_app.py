@@ -1067,12 +1067,16 @@ with main_tabs[1]:
                         },
                         {
                             "mark": {"type": "text", "dy": -8},
-                            "transform": [{"filter": {"param": "pick2"}}],
+                            "transform": [
+                                {"filter": {"param": "pick2"}},
+                                {"calculate": "datum.month + ' — ' + format(datum.occupancy, '.1f') + '%' + ' (' + datum.days_booked + '/' + datum.days_in_month + ')'"
+                                , "as": "label_occ"}
+                            ],
                             "encoding": {
                                 "x": {"field": "month", "type": "ordinal", "sort": MONTHS},
                                 "y": {"field": "occupancy", "type": "quantitative"},
                                 "color": {"field": "floor", "type": "nominal"},
-                                "text": {"field": "occupancy", "type": "quantitative", "format": ".1f"}
+                                "text": {"field": "label_occ", "type": "nominal"}
                             }
                         }
                     ],
@@ -1158,12 +1162,16 @@ with main_tabs[1]:
                         },
                         {
                             "mark": {"type": "text", "dy": -8},
-                            "transform": [{"filter": {"param": "pick_mix"}}],
+                            "transform": [
+                                {"filter": {"param": "pick_mix"}},
+                                {"calculate": "datum.month + ' — ' + format(datum.share, '.1f') + '%' + ' (' + format(datum.price, ',.0f') + ')'"
+                                , "as": "label_mix"}
+                            ],
                             "encoding": {
                                 "x": {"field": "month", "type": "ordinal", "sort": MONTHS},
                                 "y": {"field": "share", "type": "quantitative"},
                                 "color": {"field": "floor", "type": "nominal"},
-                                "text": {"field": "share", "type": "quantitative", "format": ".1f"}
+                                "text": {"field": "label_mix", "type": "nominal"}
                             }
                         }
                     ],
