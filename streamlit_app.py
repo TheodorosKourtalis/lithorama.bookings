@@ -440,8 +440,20 @@ with main_tabs[1]:
     else:
         # ---- Φίλτρα ----
         floors_sel = st.multiselect("Όροφοι", FLOORS_DISPLAY, default=FLOORS_DISPLAY)
-        y_min, y_max = (int(stats_df["year"].min()), int(stats_df["year"].max())) if not stats_df.empty else (0, 0)
-        year_range = st.slider("Έτη", min_value=y_min, max_value=y_max, value=(y_min, y_max)) if y_min <= y_max else (y_min, y_max)
+        years_available = (
+            sorted(stats_df["year"].dropna().astype(int).unique().tolist())
+            if not stats_df.empty else []
+        )
+        if years_available:
+            y_min, y_max = years_available[0], years_available[-1]
+            if y_min == y_max:
+                year_range = (y_min, y_max)
+                st.caption(f"Διαθέσιμο μόνο έτος: {y_min}")
+            else:
+                year_range = st.slider("Έτη", min_value=y_min, max_value=y_max, value=(y_min, y_max))
+        else:
+            y_min, y_max = 0, 0
+            year_range = (y_min, y_max)
 
         # Καθαρισμός/ταξινόμηση μηνών
         stats_df["month"] = pd.Categorical(stats_df["month"], categories=MONTHS, ordered=True)
