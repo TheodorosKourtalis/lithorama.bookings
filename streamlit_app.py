@@ -106,6 +106,9 @@ st.markdown(
 def get_conn() -> sqlite3.Connection:
     # check_same_thread False για να μην σκάει σε reruns/πολλαπλά threads του Streamlit
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=5000;")
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
 
@@ -208,7 +211,7 @@ def load_grid_df() -> pd.DataFrame:
     return grid
 
 
-def save_grid_df(grid: pd.DataFrame) -> None:
+def save_grid_df(grid: pd.DataFrame) -> Tuple[bool, Optional[str]]:
     grid = grid.astype("string")
     try:
         with get_conn() as c:
@@ -216,7 +219,8 @@ def save_grid_df(grid: pd.DataFrame) -> None:
             # Upsert όλων των κελιών
             for d in grid.index:
                 for col in grid.columns:
-                    entries = (grid.at[d, col] or "").strip()
+                    val = grid.at[d, col]
+                    entries = "" if pd.isna(val) else str(val).strip()
                     month, floor_disp = split_month_floor(col)
                     floor_db = FLOOR_DB_VALUE[floor_disp]
                     cur.execute(
@@ -224,11 +228,12 @@ def save_grid_df(grid: pd.DataFrame) -> None:
                         "ON CONFLICT(month,floor,day) DO UPDATE SET entries=excluded.entries",
                         (month, floor_db, int(d), entries),
                     )
-            # Αναδημιουργία bookings
+            # Αναδημιουργία bookings (σβήσε όλα και ξαναπέρασε τα parsed)
             cur.execute("DELETE FROM bookings")
             for d in grid.index:
                 for col in grid.columns:
-                    entries = (grid.at[d, col] or "").strip()
+                    val = grid.at[d, col]
+                    entries = "" if pd.isna(val) else str(val).strip()
                     month, floor_disp = split_month_floor(col)
                     floor_db = FLOOR_DB_VALUE[floor_disp]
                     parsed = parse_cell_entries(entries)
@@ -238,8 +243,9 @@ def save_grid_df(grid: pd.DataFrame) -> None:
                             (year, floor_db, month, int(d), price),
                         )
             c.commit()
+        return True, None
     except Exception as e:
-        st.error("Σφάλμα αποθήκευσης στη βάση. Δοκίμασε ξανά.")
+        return False, str(e)
 
 # ---------- Sidebar (λειτουργίες) ----------
 with st.sidebar:
@@ -253,8 +259,11 @@ with st.sidebar:
     live_stats = st.toggle("Ζωντανά στατιστικά (μπορεί να καθυστερεί)", value=False, help="Αν είναι ενεργό, τα στατιστικά υπολογίζονται σε κάθε αλλαγή. Απενεργοποίησέ το για πιο ομαλή επεξεργασία.")
 
     if st.button("💾 Αποθήκευση", type="primary"):
-        save_grid_df(st.session_state["grid_df"])
-        st.success("Αποθηκεύτηκαν οι κρατήσεις και ενημερώθηκαν τα στατιστικά.")
+        ok, err = save_grid_df(st.session_state["grid_df"])
+        if ok:
+            st.success("Αποθηκεύτηκαν οι κρατήσεις και ενημερώθηκαν τα στατιστικά.")
+        else:
+            st.error(f"Σφάλμα αποθήκευσης στη βάση: {err}")
 
     st.markdown("---")
     if st.button("⬇️ Εξαγωγή CSV (κρατήσεις)"):
