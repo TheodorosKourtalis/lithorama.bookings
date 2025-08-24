@@ -373,6 +373,28 @@ with st.sidebar:
         st.session_state["grid_df"] = empty_grid()
         st.warning("Καθαρίστηκαν όλοι οι μήνες. Πάτα Αποθήκευση για να γραφτεί στη βάση.")
 
+    st.markdown("—")
+    st.subheader("Καθαρισμός μήνα για συγκεκριμένο έτος")
+    clear_year = st.number_input("Έτος", min_value=2000, max_value=2100, value=pd.Timestamp.today().year, step=1, key="clear_year_input")
+    clear_month = st.selectbox("Μήνας", MONTHS, key="clear_month_select")
+    if st.button("🧽 Καθάρισε τον μήνα για το έτος", key="btn_clear_month_year"):
+        base = st.session_state.get("grid_df", empty_grid()).copy().astype("string").fillna("")
+        yy_target = int(clear_year)
+        # Για κάθε όροφο και μέρα στον επιλεγμένο μήνα, αφαίρεσε μόνο τα tokens του συγκεκριμένου έτους
+        for f in FLOORS_DISPLAY:
+            col = f"{clear_month} {f}"
+            if col not in base.columns:
+                continue
+            for d in base.index:
+                cell_text = str(base.at[d, col] or "").strip()
+                if not cell_text:
+                    continue
+                tokens = parse_cell_entries(cell_text)
+                kept = [(y, p) for (y, p) in tokens if int(y) != yy_target]
+                base.at[d, col] = serialize_entries(kept)
+        st.session_state["grid_df"] = _norm_df(base)
+        st.success(f"Καθαρίστηκαν τα δεδομένα του {clear_month} για το έτος {clear_year}. Πάτα Αποθήκευση για να γραφτούν στη βάση.")
+
 # ---------- Πίνακας (HTML‑styled) με φόρμα αποθήκευσης ----------
 main_tabs = st.tabs(["Καταχώρηση", "Στατιστικά"])  # δύο σελίδες: εισαγωγή & στατιστικά
 
