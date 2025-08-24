@@ -171,7 +171,7 @@ def split_month_floor(col: str) -> Tuple[str, str]:
 # ---------- Φόρτωση/Αποθήκευση πλέγματος ----------
 
 def empty_grid() -> pd.DataFrame:
-    grid = pd.DataFrame("", index=DAYS, columns=GRID_COLUMNS)
+    grid = pd.DataFrame("", index=DAYS, columns=GRID_COLUMNS, dtype="string")
     grid.index.name = "Ημέρα"
     return grid
 
@@ -187,10 +187,13 @@ def load_grid_df() -> pd.DataFrame:
         d = int(row["day"])
         if col in grid.columns and d in grid.index:
             grid.at[d, col] = row["entries"] or ""
+    # Εξαναγκάζουμε string dtype ώστε να μην εμφανίζονται NaN/παλιές τιμές
+    grid = grid.astype("string")
     return grid
 
 
 def save_grid_df(grid: pd.DataFrame) -> None:
+    grid = grid.astype("string")
     with get_conn() as c:
         cur = c.cursor()
         # Upsert όλων των κελιών
@@ -258,14 +261,18 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Ρύθμιση text columns για ΣΥΓΚΕΚΡΙΜΕΝΗ συμπεριφορά εισαγωγής/διαγραφής
+col_cfg = {col: st.column_config.TextColumn(col, help="Γράψε π.χ. 22 ή 22:120. Πολλαπλές εγγραφές με κόμμα.") for col in GRID_COLUMNS}
+
 edited = st.data_editor(
     st.session_state["grid_df"],
     num_rows="fixed",
     use_container_width=True,
     key="booking_editor",
+    column_config=col_cfg,
 )
-# Ενημέρωση state
-st.session_state["grid_df"] = edited
+# Ενημέρωση state πάντα ως string dtype (αποφεύγει NaN και επανεμφάνιση προηγούμενης τιμής)
+st.session_state["grid_df"] = edited.astype("string")
 
 # ---------- Στατιστικά ----------
 st.markdown(
