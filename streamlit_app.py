@@ -24,7 +24,6 @@ from typing import List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
-from pandas.util import hash_pandas_object
 
 APP_TITLE = "📅 Κρατήσεις Διαμερισμάτων (Απρ–Οκτ)"
 # Χρησιμοποιούμε επίμονο φάκελο στο Streamlit Cloud (/mount/data) αν υπάρχει/είναι εγγράψιμος
@@ -136,8 +135,30 @@ CREATE INDEX IF NOT EXISTS idx_bookings_floor ON bookings(floor);
 CREATE INDEX IF NOT EXISTS idx_bookings_month ON bookings(month);
 """
 
-with get_conn() as c:
-    c.executescript(SCHEMA_SQL)
+def ensure_schema() -> None:
+    with get_conn() as c:
+        # Αν δεν υπάρχει καθόλου, φτιάξ' το
+        c.executescript(SCHEMA_SQL)
+        try:
+            cols = pd.read_sql_query("PRAGMA table_info(cells)", c)
+            colnames = set(cols["name"].tolist())
+            if "floor" not in colnames:
+                # Μεταφορά από παλιό σχήμα: month, day, entries
+                c.execute("BEGIN")
+                c.execute("ALTER TABLE cells RENAME TO cells_old;")
+                c.executescript(SCHEMA_SQL)
+                # Βάλε τα παλιά ως Ισόγειο
+                c.execute(
+                    "INSERT INTO cells(month, floor, day, entries)\n"
+                    "SELECT month, 'Ισόγειο' AS floor, day, entries FROM cells_old;"
+                )
+                c.execute("DROP TABLE cells_old;")
+                c.execute("COMMIT")
+        except Exception:
+            # Αν κάτι πάει στραβά, ας μην μπλοκάρουμε την εφαρμογή
+            pass
+
+ensure_schema()
 
 # ---------- Parsing κρατήσεων ----------
 # Δεχόμαστε: 2-ψηφιο έτος και προαιρετική τιμή: 22 ή 22:120
@@ -193,8 +214,7 @@ def load_grid_df() -> pd.DataFrame:
     except Exception:
         # Αν για οποιονδήποτε λόγο λείπει ο πίνακας ή υπάρχει παλιά έκδοση, ξαναφτιάξ’ τον και δώσε κενό πλέγμα
         try:
-            with get_conn() as c:
-                c.executescript(SCHEMA_SQL)
+            ensure_schema()
         except Exception:
             pass
         return empty_grid()
@@ -260,119 +280,77 @@ def _frames_equal(a: pd.DataFrame, b: pd.DataFrame) -> bool:
 
 # ---------- Sidebar (λειτουργίες) ----------
 with st.sidebar:
-    st.header("⚙️ Ρυθμίσεις & Ενέργειες")
+    st.header("ℹ️ Οδηγίες")
     st.markdown(
-        "*Μορφή τιμής:* <code>YY</code> ή προαιρετικά <code>YY:τιμή</code> (π.χ. <code>22</code> ή <code>22:120</code>).",
-        unsafe_allow_html=True,
-    )
-    st.caption("Παράδειγμα: 22, 22:150, 23")
+        "Γράψε σε κελιά τιμές όπως **22** ή **22:120**. Χώρισε πολλαπλές τιμές με κόμμα.\n\n"
+        "Οι αλλαγές **δεν** αποθηκεύονται αυτόματα — πατάς **Αποθήκευση** στο κάτω μέρος του πίνακα.")
+    st.markdown("—")
+    # Προαιρετικό: export κουμπί θα το βάλουμε κάτω, μετά την Αποθήκευση.
 
-    live_stats = st.toggle("Ζωντανά στατιστικά (μπορεί να καθυστερεί)", value=False, help="Αν είναι ενεργό, τα στατιστικά υπολογίζονται σε κάθε αλλαγή. Απενεργοποίησέ το για πιο ομαλή επεξεργασία.")
-
-    if st.button("💾 Αποθήκευση", type="primary"):
-        ok, err = save_grid_df(st.session_state["grid_df"])
-        if ok:
-            st.success("Αποθηκεύτηκαν οι κρατήσεις και ενημερώθηκαν τα στατιστικά.")
-        else:
-            st.error(f"Σφάλμα αποθήκευσης στη βάση: {err}")
-
-    st.markdown("---")
-    if st.button("⬇️ Εξαγωγή CSV (κρατήσεις)"):
-        with get_conn() as c:
-            bookings = pd.read_sql_query("SELECT year, floor, month, day, price FROM bookings", c)
-        csv_bytes = bookings.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "Λήψη bookings.csv",
-            data=csv_bytes,
-            file_name="bookings.csv",
-            mime="text/csv",
-        )
-
-# ---------- Αρχικός πίνακας (Data Editor) ----------
+# ---------- Πίνακας (HTML‑styled) με φόρμα αποθήκευσης ----------
 if "grid_df" not in st.session_state:
     st.session_state["grid_df"] = load_grid_df()
 
 st.markdown(
     """
 <div class="card">
-  <h3>🗂️ Πίνακας Κρατήσεων (στήλες ανά Μήνα×Όροφο: Ισόγειο/Α/Β)</h3>
-  <div class="small-muted">Γράψε σε κελιά τιμές όπως <code>22</code> ή <code>22:120</code>. Χώρισε πολλαπλές τιμές με κόμμα.</div>
+  <h3>🗂️ Πίνακας Κρατήσεων (Μήνας × Όροφος: Ισόγειο/Α/Β)</h3>
+  <div class="small-muted">Οι αλλαγές καταχωρούνται όταν πατήσεις <strong>Αποθήκευση</strong> στο τέλος.</div>
 </div>
 """,
     unsafe_allow_html=True,
 )
 
-# Ρύθμιση text columns για ΣΥΓΚΕΚΡΙΜΕΝΗ συμπεριφορά εισαγωγής/διαγραφής
-col_cfg = {col: st.column_config.TextColumn(col, help="Γράψε π.χ. 22 ή 22:120. Πολλαπλές εγγραφές με κόμμα.") for col in GRID_COLUMNS}
+# Βοηθητική για labels
+def _label(month: str, floor: str, day: int) -> str:
+    return f"{month} {floor} — {day}"
 
-view_df = _norm_df(st.session_state["grid_df"])  # πάντα "" αντί για <NA>
-edited = st.data_editor(
-    view_df,
-    num_rows="fixed",
-    use_container_width=True,
-    key="booking_editor",
-    column_config=col_cfg,
-)
-# Ενημέρωση state ΜΟΝΟ αν όντως άλλαξε κάτι (αποφεύγει διπλές ενημερώσεις/lag)
-current_df = _norm_df(st.session_state["grid_df"])
-new_df = _norm_df(edited)
-if not _frames_equal(current_df, new_df):
-    st.session_state["grid_df"] = new_df
+with st.form("booking_form", clear_on_submit=False):
+    tabs = st.tabs(MONTHS)
+    # Θα συλλέξουμε τις τιμές εδώ
+    new_values = {}
+    for i, m in enumerate(MONTHS):
+        with tabs[i]:
+            st.markdown(f"### {m}")
+            # HTML‑styled table header
+            st.markdown(
+                "<div style='display:grid;grid-template-columns:80px 1fr 1fr 1fr;gap:6px;font-weight:600;'>"
+                "<div>Ημέρα</div><div>Ισόγειο</div><div>Α</div><div>Β</div>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            for d in DAYS:
+                cols = st.columns([0.7, 1, 1, 1], gap="small")
+                cols[0].markdown(f"**{d}**")
+                for j, f in enumerate(FLOORS_DISPLAY, start=1):
+                    colname = f"{m} {f}"
+                    initial = st.session_state["grid_df"].at[d, colname] if (d in st.session_state["grid_df"].index and colname in st.session_state["grid_df"].columns) else ""
+                    key = f"cell::{m}::{f}::{d}"
+                    val = cols[j].text_input(_label(m, f, d), value=str(initial or ""), key=key, label_visibility="collapsed")
+                    new_values[(d, colname)] = val
+    submitted = st.form_submit_button("💾 Αποθήκευση", type="primary")
 
-# ---------- Στατιστικά ----------
-if live_stats:
-    with get_conn() as c:
-        stats_df = pd.read_sql_query("SELECT year, floor, month, day, price FROM bookings", c)
-else:
-    # Όταν τα ζωντανά στατιστικά είναι κλειστά, δείχνουμε τα τελευταία αποθηκευμένα μόνο μετά από Αποθήκευση
-    try:
+# Αν πατήθηκε Αποθήκευση, αναδομούμε DataFrame και γράφουμε στη ΒΔ
+if submitted:
+    updated = st.session_state["grid_df"].copy()
+    for (d, colname), v in new_values.items():
+        if colname in updated.columns and d in updated.index:
+            updated.at[d, colname] = str(v or "")
+    st.session_state["grid_df"] = updated.astype("string").fillna("")
+    ok, err = save_grid_df(st.session_state["grid_df"])
+    if ok:
+        st.success("Αποθηκεύτηκαν οι κρατήσεις.")
+    else:
+        st.error(f"Σφάλμα αποθήκευσης: {err}")
+
+    # Προσφέρουμε export μετά την επιτυχή αποθήκευση
+    if ok:
         with get_conn() as c:
-            stats_df = pd.read_sql_query("SELECT year, floor, month, day, price FROM bookings", c)
-    except Exception:
-        stats_df = pd.DataFrame(columns=["year", "floor", "month", "day", "price"])  # κενό
-
-if stats_df.empty:
-    st.info("Δεν υπάρχουν αποθηκευμένες κρατήσεις ακόμη ή τα ζωντανά στατιστικά είναι απενεργοποιημένα.")
-else:
-    # Σύνολα ανά έτος
-    per_year = stats_df.groupby("year").size().reset_index(name="κρατήσεις")
-    # Σύνολα ανά έτος & όροφο
-    per_year_floor = (
-        stats_df.groupby(["year", "floor"]).size().reset_index(name="κρατήσεις")
-    )
-
-    # Μέσος όρος τιμής (αν έχουν εισαχθεί τιμές)
-    price_info = None
-    if stats_df["price"].notna().any():
-        price_info = (
-            stats_df.dropna(subset=["price"]).groupby("year")["price"].mean().reset_index()
+            bookings = pd.read_sql_query("SELECT year, floor, month, day, price FROM bookings", c)
+        csv_bytes = bookings.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "⬇️ Λήψη bookings.csv",
+            data=csv_bytes,
+            file_name="bookings.csv",
+            mime="text/csv",
         )
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        total_all = int(per_year["κρατήσεις"].sum()) if not per_year.empty else 0
-        st.metric("Σύνολο κρατήσεων (όλα τα έτη)", f"{total_all}")
-    with col2:
-        latest_year = int(per_year["year"].max()) if not per_year.empty else None
-        if latest_year:
-            latest_cnt = int(per_year.loc[per_year["year"] == latest_year, "κρατήσεις"].sum())
-            st.metric(f"Κρατήσεις {latest_year}", f"{latest_cnt}")
-        else:
-            st.metric("Κρατήσεις", "0")
-    with col3:
-        if price_info is not None and not price_info.empty:
-            last_price_year = int(price_info["year"].max())
-            mean_price = float(price_info.loc[price_info["year"] == last_price_year, "price"].iloc[0])
-            st.metric(f"Μέση τιμή ({last_price_year})", f"{mean_price:.2f}")
-        else:
-            st.metric("Μέση τιμή", "—")
-
-    st.subheader("Ανά έτος")
-    st.dataframe(per_year, use_container_width=True)
-
-    st.subheader("Ανά έτος & όροφο")
-    st.dataframe(per_year_floor, use_container_width=True)
-
-    if price_info is not None and not price_info.empty:
-        st.subheader("Μέση τιμή ανά έτος")
-        st.dataframe(price_info.rename(columns={"price": "μέση_τιμή"}), use_container_width=True)
