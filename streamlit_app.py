@@ -1009,19 +1009,32 @@ with main_tabs[1]:
             st.vega_lite_chart(
                 occ,
                 {
-                    "mark": "line",
-                    "encoding": {
-                        "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
-                        "y": {"field": "occupancy", "type": "quantitative", "title": "% Πληρότητα"},
-                        "color": {"field": "floor", "type": "nominal", "title": "Όροφος"},
-                        "column": {"field": "year", "type": "ordinal", "title": "Έτος"},
-                        "tooltip": [
-                            {"field": "year", "type": "ordinal"},
-                            {"field": "month", "type": "ordinal"},
-                            {"field": "floor", "type": "nominal"},
-                            {"field": "occupancy", "type": "quantitative", "title": "%"}
-                        ]
-                    },
+                    "layer": [
+                        {
+                            "mark": "line",
+                            "encoding": {
+                                "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
+                                "y": {"field": "occupancy", "type": "quantitative", "title": "% Πληρότητα"},
+                                "color": {"field": "floor", "type": "nominal", "title": "Όροφος"},
+                                "column": {"field": "year", "type": "ordinal", "title": "Έτος"},
+                                "tooltip": [
+                                    {"field": "year", "type": "ordinal"},
+                                    {"field": "month", "type": "ordinal"},
+                                    {"field": "floor", "type": "nominal"},
+                                    {"field": "occupancy", "type": "quantitative", "title": "%"}
+                                ]
+                            }
+                        },
+                        {
+                            "mark": {"type": "point"},
+                            "encoding": {
+                                "x": {"field": "month", "type": "ordinal", "sort": MONTHS},
+                                "y": {"field": "occupancy", "type": "quantitative"},
+                                "color": {"field": "floor", "type": "nominal"},
+                                "column": {"field": "year", "type": "ordinal"}
+                            }
+                        }
+                    ],
                     "width": 280,
                     "height": 260
                 },
@@ -1073,19 +1086,32 @@ with main_tabs[1]:
             st.vega_lite_chart(
                 mix,
                 {
-                    "mark": "area",
-                    "encoding": {
-                        "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
-                        "y": {"field": "share", "type": "quantitative", "stack": "normalize", "title": "% μερίδιο"},
-                        "color": {"field": "floor", "type": "nominal", "title": "Όροφος"},
-                        "column": {"field": "year", "type": "ordinal", "title": "Έτος"},
-                        "tooltip": [
-                            {"field": "year", "type": "ordinal"},
-                            {"field": "month", "type": "ordinal"},
-                            {"field": "floor", "type": "nominal"},
-                            {"field": "share", "type": "quantitative", "title": "%"}
-                        ]
-                    },
+                    "layer": [
+                        {
+                            "mark": "area",
+                            "encoding": {
+                                "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
+                                "y": {"field": "share", "type": "quantitative", "stack": "normalize", "title": "% μερίδιο"},
+                                "color": {"field": "floor", "type": "nominal", "title": "Όροφος"},
+                                "column": {"field": "year", "type": "ordinal", "title": "Έτος"},
+                                "tooltip": [
+                                    {"field": "year", "type": "ordinal"},
+                                    {"field": "month", "type": "ordinal"},
+                                    {"field": "floor", "type": "nominal"},
+                                    {"field": "share", "type": "quantitative", "title": "%"}
+                                ]
+                            }
+                        },
+                        {
+                            "mark": {"type": "point"},
+                            "encoding": {
+                                "x": {"field": "month", "type": "ordinal", "sort": MONTHS},
+                                "y": {"field": "share", "type": "quantitative"},
+                                "color": {"field": "floor", "type": "nominal"},
+                                "column": {"field": "year", "type": "ordinal"}
+                            }
+                        }
+                    ],
                     "width": 280,
                     "height": 260
                 },
@@ -1229,14 +1255,16 @@ with main_tabs[1]:
             for i in range(len(edges)-1):
                 labels.append(f"{edges[i]}–{edges[i+1]}")
             cut = pd.cut(fdf["price"], bins=edges, labels=labels, include_lowest=True, right=True)
-            band_tbl = fdf.assign(band=cut).groupby(["year", "band"]).size().reset_index(name="count")
+            # Επιβάλλουμε σειρά κατηγοριών για σωστή αύξουσα ταξινόμηση στον άξονα
+            fdf.loc[:, "band"] = pd.Categorical(cut, categories=labels, ordered=True)
+            band_tbl = fdf.groupby(["year", "band"]).size().reset_index(name="count")
             if not band_tbl.empty:
                 st.vega_lite_chart(
                     band_tbl,
                     {
                         "mark": "bar",
                         "encoding": {
-                            "x": {"field": "band", "type": "ordinal", "title": "Ζώνη τιμής"},
+                            "x": {"field": "band", "type": "ordinal", "title": "Ζώνη τιμής", "sort": labels},
                             "y": {"field": "count", "type": "quantitative", "title": "Κρατήσεις"},
                             "color": {"field": "year", "type": "nominal", "title": "Έτος"},
                             "tooltip": [
