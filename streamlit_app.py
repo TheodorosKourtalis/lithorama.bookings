@@ -455,6 +455,10 @@ def _frames_equal(a: pd.DataFrame, b: pd.DataFrame) -> bool:
     b2 = _norm_df(b)
     return a2.equals(b2)
 
+# --- UI helper: small explanatory note under charts ---
+def explain(text: str):
+    st.caption(text)
+
 # ---------- Sidebar (λειτουργίες) ----------
 with st.sidebar:
     st.header("ℹ️ Οδηγίες")
@@ -795,6 +799,7 @@ with main_tabs[1]:
         st.subheader("Κρατήσεις ανά έτος")
         if not per_year.empty:
             st.bar_chart(per_year.set_index("year"))
+            explain("Πόσες κρατήσεις έγιναν ανά έτος. Βοηθά να δούμε τη συνολική τάση (αύξηση/μείωση).")
         else:
             st.info("Δεν υπάρχουν δεδομένα για το εύρος ετών/ορόφων που επέλεξες.")
 
@@ -803,6 +808,7 @@ with main_tabs[1]:
             # Pivot για stacked visualization
             pv = per_year_floor.pivot(index="year", columns="floor", values="κρατήσεις").fillna(0)
             st.bar_chart(pv)
+            explain("Πώς μοιράζονται οι κρατήσεις ανά όροφο κάθε χρόνο — εντοπίζουμε ποιος όροφος οδηγεί την κίνηση.")
         else:
             st.info("Δεν υπάρχουν δεδομένα για τους ορόφους που επέλεξες.")
 
@@ -810,6 +816,7 @@ with main_tabs[1]:
         st.subheader("Κρατήσεις ανά μήνα (εποχικότητα)")
         per_month = fdf.groupby("month").size().reindex(MONTHS).fillna(0)
         st.line_chart(per_month)
+        explain("Εποχικότητα στη ζήτηση: ποιοι μήνες έχουν περισσότερες/λιγότερες κρατήσεις.")
 
         # Θερμικός χάρτης: Ημέρα × Μήνας (πλήθος κρατήσεων)
         st.subheader("Heatmap: Ημέρα × Μήνας")
@@ -835,6 +842,7 @@ with main_tabs[1]:
             },
             use_container_width=True,
         )
+        explain("Ποιες ημέρες του μήνα γεμίζουν περισσότερο ανά μήνα — βοηθά για min-stay/προωθήσεις.")
 
         # Κατανομή τιμών (αν υπάρχουν)
         if fdf["price"].notna().any():
@@ -853,12 +861,15 @@ with main_tabs[1]:
                 },
                 use_container_width=True,
             )
+            explain("Πού συγκεντρώνονται οι τιμές: χαμηλές/μεσαίες/υψηλές. Χρήσιμο για έλεγχο outliers.")
 
             st.subheader("Μέση τιμή ανά έτος")
             st.line_chart(price_mean.set_index("year"))
+            explain("Πώς μεταβάλλεται η μέση τιμή κάθε χρόνο — δείκτης τιμολογιακής πολιτικής.")
 
             st.subheader("Έσοδα ανά έτος")
             st.bar_chart(revenue.set_index("year"))
+            explain("Συνολικά έσοδα ανά έτος (με βάση τις τιμές). Βοηθά στον προϋπολογισμό.")
 
         # Πίνακες δεδομένων
         with st.expander("Πίνακες δεδομένων"):
@@ -901,6 +912,7 @@ with main_tabs[1]:
                 },
                 use_container_width=True,
             )
+            explain("Μηνιαία έσοδα και συνεισφορά κάθε ορόφου. Εντοπίζουμε ποιος όροφος οδηγεί έσοδα ανά μήνα.")
         else:
             st.info("Δεν υπάρχουν έσοδα για να εμφανιστούν ανά μήνα.")
 
@@ -927,36 +939,29 @@ with main_tabs[1]:
                 },
                 use_container_width=True,
             )
+            explain("Σύγκριση ίδιου μήνα μεταξύ ετών — βλέπουμε αν π.χ. ο Αύγουστος βελτιώθηκε σε σχέση με πέρσι.")
 
         st.subheader("Εβδομαδιαίο μοτίβο (κρατήσεις ανά ημέρα εβδομάδας)")
         # Προετοιμασία ημερομηνίας & weekday
+        # Χάρτης GR μήνα -> αριθμός
         fdf_dates = fdf.copy()
         fdf_dates["month_num"] = fdf_dates["month"].map(MONTH_NUM)
         # Κατασκευή ημερομηνίας (κάποια NaN θα γίνουν NaT και θα αγνοηθούν)
-        fdf_dates["date"] = pd.to_datetime(
-            dict(year=fdf_dates["year"], month=fdf_dates["month_num"], day=fdf_dates["day"]),
-            errors="coerce",
-        )
+        fdf_dates["date"] = pd.to_datetime(dict(year=fdf_dates["year"], month=fdf_dates["month_num"], day=fdf_dates["day"]), errors="coerce")
         fdf_dates = fdf_dates.dropna(subset=["date"])  # κρατάμε μόνο έγκυρες
         if not fdf_dates.empty:
-            # Αποφεύγουμε system locale: χαρτογραφούμε index (0=Δευτέρα .. 6=Κυριακή)
-            weekday_map_gr = {
-                0: "Δευτέρα",
-                1: "Τρίτη",
-                2: "Τετάρτη",
-                3: "Πέμπτη",
-                4: "Παρασκευή",
-                5: "Σάββατο",
-                6: "Κυριακή",
-            }
-            fdf_dates["weekday_idx"] = fdf_dates["date"].dt.weekday
-            fdf_dates["weekday"] = fdf_dates["weekday_idx"].map(weekday_map_gr)
+            fdf_dates["weekday"] = fdf_dates["date"].dt.day_name(locale="el_GR") if hasattr(fdf_dates["date"].dt, "day_name") else fdf_dates["date"].dt.day_name()
+            # Τάξη ημερών (Δευτέρα..Κυριακή) – fallback στα Αγγλικά αν χρειάζεται
             weekday_order = [
-                "Δευτέρα", "Τρίτη", "Τετάρτη", "Πέμπτη", "Παρασκευή", "Σάββατο", "Κυριακή"
+                "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
             ]
+            # Αν είναι ελληνικά, φτιάξε GR σειρά
+            if fdf_dates["weekday"].str.contains("Δευ", na=False).any():
+                weekday_order = ["Δευτέρα", "Τρίτη", "Τετάρτη", "Πέμπτη", "Παρασκευή", "Σάββατο", "Κυριακή"]
             wdf = fdf_dates.groupby(["weekday"]).size().reset_index(name="κρατήσεις")
             wdf["weekday"] = pd.Categorical(wdf["weekday"], categories=weekday_order, ordered=True)
             st.bar_chart(wdf.set_index("weekday"))
+            explain("Ποιες ημέρες εβδομάδας έχουν μεγαλύτερη ζήτηση — χρήσιμο για διαφοροποίηση τιμής ανά ημέρα.")
         else:
             st.info("Δεν ήταν δυνατή η δημιουργία έγκυρων ημερομηνιών για weekday ανάλυση.")
 
@@ -978,6 +983,7 @@ with main_tabs[1]:
                 },
                 use_container_width=True,
             )
+            explain("Διασπορά τιμών ανά μήνα (median, εύρος). Βρίσκουμε μήνες με μεγάλες διακυμάνσεις.")
         else:
             st.info("Δεν υπάρχουν τιμές για boxplot.")
 
@@ -1014,6 +1020,7 @@ with main_tabs[1]:
                 },
                 use_container_width=True,
             )
+            explain("Ποσοστό ημερών με τουλάχιστον μία κράτηση. Δείχνει δυναμική ζήτησης ανά μήνα/όροφο.")
         else:
             st.info("Δεν βρέθηκαν δεδομένα για υπολογισμό πληρότητας.")
 
@@ -1045,6 +1052,7 @@ with main_tabs[1]:
                 },
                 use_container_width=True,
             )
+            explain("Πόσο γρήγορα συσσωρεύονται τα έσοδα μέσα στη χρονιά — εύκολο benchmark μεταξύ ετών.")
         else:
             st.info("Δεν υπάρχουν δεδομένα εσόδων για σωρευτικό γράφημα.")
 
@@ -1076,6 +1084,7 @@ with main_tabs[1]:
                 },
                 use_container_width=True,
             )
+            explain("Τι ποσοστό εσόδων φέρνει κάθε όροφος κάθε μήνα — αποκαλύπτει μετατοπίσεις mix.")
         else:
             st.info("Δεν υπάρχουν δεδομένα για μερίδιο εσόδων.")
 
@@ -1115,6 +1124,7 @@ with main_tabs[1]:
                     },
                     use_container_width=True,
                 )
+                explain("Διαφορά εσόδων έναντι βάσης (πέρσι). Θετικό=καλύτερα, αρνητικό=χειρότερα.")
             else:
                 st.info("Δεν υπάρχουν και τα δύο έτη για πλήρη YoY σύγκριση.")
         else:
@@ -1178,36 +1188,6 @@ with main_tabs[1]:
 
         # ===================== VALUE-ADD WITH NO NEW DATA =====================
         st.markdown("---")
-        st.subheader("Στόχοι & Πρόοδος (χωρίς αποθήκευση)")
-        colt1, colt2 = st.columns(2)
-        with colt1:
-            target_year = st.number_input("Ετήσιος στόχος εσόδων (όλων των ορόφων)", min_value=0.0, value=0.0, step=100.0, help="Προσωρινή τιμή μόνο για προβολή – δεν αποθηκεύεται στο αρχείο.")
-        with colt2:
-            target_month = st.number_input("Μηνιαίος στόχος εσόδων (όλων των ορόφων)", min_value=0.0, value=0.0, step=100.0, help="Προσωρινή τιμή μόνο για προβολή.")
-        # Υπολογισμοί από φιλτραρισμένα δεδομένα
-        rev_all = fdf.dropna(subset=["price"]).groupby("year")["price"].sum().reset_index()
-        rev_month_now = fdf.dropna(subset=["price"]).groupby(["year", "month"]) ["price"].sum().reset_index()
-        # Έτος τελευταίο (στο εύρος φίλτρου)
-        if not rev_all.empty:
-            last_y = int(rev_all["year"].max())
-            y_rev = float(rev_all.loc[rev_all["year"] == last_y, "price"].iloc[0])
-            if target_year > 0:
-                pct = min(100.0, (y_rev / target_year) * 100.0)
-                st.progress(pct/100.0, text=f"{last_y}: {y_rev:,.0f} / {target_year:,.0f} ({pct:.1f}%)")
-        # Μήνας τρέχων (με βάση σύνολο δεδομένων μέσα στα φίλτρα)
-        if not rev_month_now.empty:
-            # διάλεξε μήνα με selectbox για στόχο
-            m_sel = st.selectbox("Μήνας για σύγκριση στόχου", MONTHS, index=MONTHS.index("Αύγουστος") if "Αύγουστος" in MONTHS else 0)
-            # Άθροισε για τον μήνα αυτό στο τελευταίο διαθέσιμο έτος
-            subm = rev_month_now[rev_month_now["month"] == m_sel]
-            if not subm.empty:
-                last_y_m = int(subm["year"].max())
-                m_rev = float(subm.loc[subm["year"] == last_y_m, "price"].sum())
-                if target_month > 0:
-                    pctm = min(100.0, (m_rev / target_month) * 100.0)
-                    st.progress(pctm/100.0, text=f"{m_sel} {last_y_m}: {m_rev:,.0f} / {target_month:,.0f} ({pctm:.1f}%)")
-
-        st.markdown("---")
         st.subheader("Top / Bottom ημέρες (με βάση τιμή)")
         # Εύρεση κορυφαίων / χειρότερων ημερών από τα φιλτραρισμένα
         tbl_days = fdf.dropna(subset=["price"]).copy()
@@ -1224,6 +1204,7 @@ with main_tabs[1]:
             with c2:
                 st.write("**Bottom ημέρες**")
                 st.dataframe(worst[["year", "month", "day", "floor", "price"]], use_container_width=True)
+            explain("Γρήγορη ανάδειξη εξαιρετικών ή αδύναμων ημερών για έλεγχο/διορθωτικές ενέργειες.")
         else:
             st.info("Δεν υπάρχουν τιμές για Top/Bottom.")
 
@@ -1262,6 +1243,7 @@ with main_tabs[1]:
                     },
                     use_container_width=True,
                 )
+                explain("Κατανομή κρατήσεων ανά εύρος τιμής — βοηθά να δεις πού κινείται η ζήτηση.")
             else:
                 st.info("Δεν βρέθηκαν κρατήσεις για να υπολογιστούν ζώνες τιμών.")
         else:
@@ -1296,6 +1278,7 @@ with main_tabs[1]:
                         st.metric("Διάμεση τιμή (YoY)", f"{med_now:.0f}", delta=f"{pct:+.1f}%")
                     else:
                         st.metric("Διάμεση τιμή (YoY)", f"{med_now:.0f}")
+                explain("Σύντομη σύγκριση με πέρσι: έσοδα, πληρότητα (ημέρες με ≥1 κράτηση) και διάμεση τιμή.")
             else:
                 st.info("Χρειάζονται τουλάχιστον δύο έτη για YoY στον επιλεγμένο μήνα.")
         else:
@@ -1313,6 +1296,7 @@ with main_tabs[1]:
             if not outliers.empty:
                 st.write("**Top 10 ανωμαλίες** (|z| μεγαλύτερο)")
                 st.dataframe(outliers[["year", "month", "day", "floor", "price", "z"]], use_container_width=True)
+                explain("Ημέρες με ασυνήθιστα υψηλή/χαμηλή τιμή (z-score). Χρήσιμες για διερεύνηση σφαλμάτων ή ευκαιριών.")
             else:
                 st.info("Δεν βρέθηκαν ανωμαλίες.")
         else:
