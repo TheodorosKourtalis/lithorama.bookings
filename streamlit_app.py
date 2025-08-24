@@ -111,8 +111,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 st.markdown(f"<h1 class='title'>{APP_TITLE}</h1>", unsafe_allow_html=True)
 st.markdown(
-    "<p class='small-muted'>Γράψε σε κάθε κελί πολλά στοιχεία χωρισμένα με κόμμα, π.χ. <code>22</code> ή <code>22:120</code>.\n"
-    "Δεν βάζουμε α/β/γ — αυτό βγαίνει από τη στήλη (Ισόγειο/Α/Β).</p>",
+    "<p class='small-muted'>Πληκτρολόγησε μόνο την <code>τιμή</code>. Η εφαρμογή τη γράφει ως token <code>τιμή:YYYY;MONTH</code> (π.χ. <code>80:2023;AUGUST</code>). Κάθε κελί δέχεται πολλά tokens χωρισμένα με κόμμα, αλλά το κλειδί <code>YYYY;MONTH</code> είναι μοναδικό: η νέα τιμή αντικαθιστά την παλιά για το ίδιο έτος/μήνα.</p>",
     unsafe_allow_html=True,
 )
 
@@ -275,15 +274,20 @@ def serialize_dev(toks: list[dict]) -> str:
     return ",".join(f"{float(e['price']):g}:{int(e['year'])};{e['month_en'].upper()}" for e in toks if "price" in e and "year" in e and "month_en" in e)
 
 def dedupe_by_key(toks: list[dict]) -> list[dict]:
-    # Remove duplicates by (price, year, month_en)
-    seen = set()
-    out = []
+    # Remove duplicates by (year, month_en): keep only the last token for each (year, month_en)
+    keyed = {}
     for e in toks:
-        key = (float(e["price"]), int(e["year"]), e["month_en"].upper())
-        if key not in seen:
-            out.append(e)
-            seen.add(key)
-    return out
+        k = (int(e["year"]), e["month_en"].upper())
+        keyed[k] = e
+    return list(keyed.values())
+
+# Return the single price (as string) for the given year & month_en from a cell's tokens
+def display_price_for_year_month(cell_text: str, year: int, month_en: str) -> str:
+    toks = parse_dev_tokens(str(cell_text or ""))
+    for e in toks:
+        if int(e["year"]) == int(year) and e["month_en"].upper() == month_en.upper():
+            return f"{e['price']:g}"
+    return ""
 
 def load_grid_df_for_year(year: int) -> pd.DataFrame:
     grid = empty_grid()
@@ -417,6 +421,12 @@ def _frames_equal(a: pd.DataFrame, b: pd.DataFrame) -> bool:
 
 # ---------- Sidebar (λειτουργίες) ----------
 with st.sidebar:
+    # Ensure year-scoped grid for sidebar actions
+    sidebar_year = st.radio("Έτος εργασίας (Sidebar)", [2022, 2023, 2024, 2025], index=2, horizontal=True)
+    session_key = f"grid_df::{sidebar_year}"
+    if session_key not in st.session_state:
+        st.session_state[session_key] = load_grid_df_for_year(int(sidebar_year))
+
     st.header("ℹ️ Οδηγίες")
     st.markdown(
         "Γράψε σε κελιά τιμές όπως **22** ή **22:120**. Χώρισε πολλαπλές τιμές με κόμμα.\n\n"
@@ -474,9 +484,9 @@ with st.sidebar:
                     new_grid = None
 
             if new_grid is not None:
-                base = st.session_state.get("grid_df", empty_grid())
+                base = st.session_state[session_key].copy()
                 if merge_mode.startswith("Αντικατάσταση"):
-                    st.session_state["grid_df"] = _norm_df(new_grid)
+                    st.session_state[session_key] = _norm_df(new_grid)   # for Αντικατάσταση
                 else:
                     # Συγχώνευση: κρατάμε τα παλιά εκτός αν το νέο έχει μη κενό
                     merged = base.copy().astype("string")
@@ -484,54 +494,34 @@ with st.sidebar:
                         left = merged[col].fillna("")
                         right = new_grid[col].fillna("")
                         merged[col] = np.where(right.astype(str).str.strip() != "", right, left)
-                    st.session_state["grid_df"] = _norm_df(merged)
-                st.success("Ο πίνακας ενημερώθηκε από το CSV. Μην ξεχάσεις να πατήσεις Αποθήκευση αν θες να γραφτεί στη βάση.")
+                    st.session_state[session_key] = _norm_df(merged)     # for Συγχώνευση
+                st.success("Ο πίνακας ενημερώθηκε από το CSV στην τρέχουσα χρονιά. Μην ξεχάσεις να πατήσεις Αποθήκευση αν θες να γραφτεί στη βάση.")
         except Exception as e:
             st.error(f"Αποτυχία ανάγνωσης CSV: {e}")
 
     st.markdown("—")
-    st.subheader("Καθαρισμός")
-    month_to_clear = st.selectbox("Μήνας για καθάρισμα", MONTHS)
-    if st.button("🧹 Καθάρισε τον μήνα (όλα τα έτη)"):
-        base = st.session_state.get("grid_df", empty_grid()).copy()
+    st.subheader("Καθαρισμός (στο επιλεγμένο έτος Sidebar)")
+    month_to_clear = st.selectbox("Μήνας", MONTHS, key="clear_month_select")
+    if st.button("🧹 Καθάρισε τον μήνα στο έτος", key="btn_clear_month_year_only"):
+        base = st.session_state[session_key].copy()
         for f in FLOORS_DISPLAY:
             col = f"{month_to_clear} {f}"
             if col in base.columns:
                 base.loc[:, col] = ""
-        st.session_state["grid_df"] = _norm_df(base)
-        st.success(f"Καθαρίστηκε ο {month_to_clear}. Πάτα Αποθήκευση για να γραφτεί στη βάση.")
-    if st.button("🧨 Καθάρισε ΟΛΟΥΣ τους μήνες (όλα τα έτη)"):
-        st.session_state["grid_df"] = empty_grid()
-        st.warning("Καθαρίστηκαν όλοι οι μήνες. Πάτα Αποθήκευση για να γραφτεί στη βάση.")
+        st.session_state[session_key] = _norm_df(base)
+        st.success(f"Καθαρίστηκε ο {month_to_clear} στο {sidebar_year}. Πάτα Αποθήκευση στην κεντρική φόρμα.")
 
-    st.markdown("—")
-    st.subheader("Καθαρισμός μήνα για συγκεκριμένο έτος")
-    clear_year = st.number_input("Έτος", min_value=2000, max_value=2100, value=pd.Timestamp.today().year, step=1, key="clear_year_input")
-    clear_month = st.selectbox("Μήνας", MONTHS, key="clear_month_select")
-    if st.button("🧽 Καθάρισε τον μήνα για το έτος", key="btn_clear_month_year"):
-        base = st.session_state.get("grid_df", empty_grid()).copy().astype("string").fillna("")
-        yy_target = int(clear_year)
-        # Για κάθε όροφο και μέρα στον επιλεγμένο μήνα, αφαίρεσε μόνο τα tokens του συγκεκριμένου έτους
-        for f in FLOORS_DISPLAY:
-            col = f"{clear_month} {f}"
-            if col not in base.columns:
-                continue
-            for d in base.index:
-                cell_text = str(base.at[d, col] or "").strip()
-                if not cell_text:
-                    continue
-                tokens = parse_cell_entries(cell_text)
-                kept = [(y, p) for (y, p) in tokens if int(y) != yy_target]
-                base.at[d, col] = serialize_entries(kept)
-        st.session_state["grid_df"] = _norm_df(base)
-        st.success(f"Καθαρίστηκαν τα δεδομένα του {clear_month} για το έτος {clear_year}. Πάτα Αποθήκευση για να γραφτούν στη βάση.")
+    if st.button("🧨 Καθάρισε ΟΛΟΥΣ τους μήνες στο έτος", key="btn_clear_all_months_year_only"):
+        # clear only columns of this year in UI (the files are per-year so this is safe)
+        st.session_state[session_key] = empty_grid()
+        st.warning(f"Καθαρίστηκαν όλοι οι μήνες στο {sidebar_year}. Πάτα Αποθήκευση στην κεντρική φόρμα.")
 
 # ---------- Πίνακας (HTML‑styled) με φόρμα αποθήκευσης ----------
 main_tabs = st.tabs(["Καταχώρηση", "Στατιστικά"])  # δύο σελίδες: εισαγωγή & στατιστικά
 
 with main_tabs[0]:
     # Reload grid whenever the selected year changes
-    current_year = st.number_input("Έτος καταχώρησης", min_value=2000, max_value=2100, value=pd.Timestamp.today().year, step=1)
+    current_year = st.radio("Έτος καταχώρησης", [2022, 2023, 2024, 2025], index=2, horizontal=True)
     session_key = f"grid_df::{current_year}"
     if session_key not in st.session_state:
         st.session_state[session_key] = load_grid_df_for_year(int(current_year))
@@ -570,9 +560,10 @@ with main_tabs[0]:
                     for j, f in enumerate(FLOORS_DISPLAY, start=1):
                         colname = f"{m} {f}"
                         raw_initial = st.session_state[session_key].at[d, colname] if (d in st.session_state[session_key].index and colname in st.session_state[session_key].columns) else ""
-                        initial = display_price_for_year(str(raw_initial or ""), int(current_year))
+                        month_en = MONTH_EN[m]
+                        initial = display_price_for_year_month(str(raw_initial or ""), int(current_year), month_en)
                         key = f"cell::{m}::{f}::{d}"
-                        val = cols[j].text_input(_label(m, f, d), value=str(initial or ""), key=key, label_visibility="collapsed")
+                        val = cols[j].text_input(_label(m, f, d), value="", key=key, placeholder=str(initial or ""), label_visibility="collapsed")
                         new_values[(d, colname)] = val
         submitted = st.form_submit_button("💾 Αποθήκευση", type="primary")
 
@@ -582,12 +573,21 @@ with main_tabs[0]:
             if colname not in updated.columns or d not in updated.index:
                 continue
             new_text = str(v or "").strip()
+            if new_text == "":
+                continue  # leave cell unchanged
             mnum = re.search(r"\d+(?:\.\d+)?", new_text)
-            if mnum:
-                price_val = float(mnum.group(0))
-                updated.at[d, colname] = serialize_entries([(int(current_year), price_val)])
-            else:
-                updated.at[d, colname] = ""
+            if not mnum:
+                continue
+            price_val = float(mnum.group(0))
+            month_gr, _floor = split_month_floor(colname)
+            m_en = MONTH_EN[month_gr]
+            existing = parse_dev_tokens(str(updated.at[d, colname] or ""))
+            # keep only tokens NOT matching this (year;month)
+            existing = [e for e in existing if not (int(e["year"]) == int(current_year) and e["month_en"].upper() == m_en)]
+            # add the new token for this exact key
+            existing.append({"year": int(current_year), "month_en": m_en, "price": price_val})
+            updated.at[d, colname] = serialize_dev(dedupe_by_key(existing))
+
         st.session_state[session_key] = updated.astype("string").fillna("")
         ok, err = save_grid_df_for_year(st.session_state[session_key], int(current_year))
         if ok:
