@@ -24,6 +24,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
+import matplotlib.pyplot as plt
 
 APP_TITLE = "📅 Κρατήσεις Διαμερισμάτων (Απρ–Οκτ)"
 # Χρησιμοποιούμε επίμονο φάκελο στο Streamlit Cloud (/mount/data) αν υπάρχει/είναι εγγράψιμος
@@ -65,36 +66,23 @@ st.set_page_config(page_title=APP_TITLE, page_icon="📊", layout="wide")
 CUSTOM_CSS = """
 <style>
 /***** Κεντρικό layout *****/
-.main > div {padding-top: 0rem;}
+.main > div { padding-top: 0rem; }
 
-/***** Κάρτες *****/
-.card {
-  background: #ffffff; /* ουδέτερο λευκό */
-  border: 1px solid rgba(0,0,0,0.08);
-  box-shadow: 0 2px 12px rgba(0,0,0,0.04);
-  border-radius: 12px;
-  padding: 1rem 1rem;
-}
-.card h3 { margin: 0 0 .6rem 0; color: inherit; }
-
-/***** Πίνακας *****/
-[data-testid="stDataFrame"] table { border-radius: 8px !important; overflow: hidden; }
+/***** Κάρτες (χωρίς χρώματα/σκιές) *****/
+.card { border-radius: 12px; padding: 1rem 1rem; }
+.card h3 { margin: 0 0 .6rem 0; }
 
 /***** Κουμπιά *****/
 .stButton > button { border-radius: 10px; padding: .5rem .9rem; font-weight: 600; }
 
-/***** Κεφαλίδα *****/
-h1.title {
-  font-weight: 800; letter-spacing: -.2px; color: inherit; /* χωρίς gradients */
-}
-.small-muted {color: #6b7280; font-size: .9rem}
+/***** Κεφαλίδα (χωρίς χρώμα) *****/
+h1.title { font-weight: 800; letter-spacing: -.2px; }
+.small-muted { font-size: .9rem }
 
-/* Added for aligned headers and responsive */
-.col-header { text-align:center; font-weight:600; }
-.day-cell { text-align:center; font-weight:600; }
-@media (max-width: 768px) {
-  .small-muted { font-size: .95rem; }
-}
+/* Headers ευθυγραμμισμένα και responsive */
+.col-header { text-align: center; font-weight: 600; }
+.day-cell { text-align: center; font-weight: 600; }
+@media (max-width: 768px) { .small-muted { font-size: .95rem; } }
 </style>
 """
 
@@ -292,7 +280,72 @@ with st.sidebar:
         "Γράψε σε κελιά τιμές όπως **22** ή **22:120**. Χώρισε πολλαπλές τιμές με κόμμα.\n\n"
         "Οι αλλαγές **δεν** αποθηκεύονται αυτόματα — πατάς **Αποθήκευση** στο κάτω μέρος του πίνακα.")
     st.markdown("—")
-    # Προαιρετικό: export κουμπί θα το βάλουμε κάτω, μετά την Αποθήκευση.
+    # CSV upload + merge/replace logic
+    st.subheader("Εισαγωγή από CSV")
+    up = st.file_uploader("Επίλεξε CSV", type=["csv"], help="Δέχεται είτε long-format bookings.csv (year,floor,month,day,price) είτε grid-format με στήλες μήνας+όροφος και προαιρετική στήλη Ημέρα.")
+    merge_mode = st.radio(
+        "Τρόπος ενημέρωσης",
+        ["Αντικατάσταση όλων", "Συγχώνευση (μόνο μη κενά)"],
+        index=1,
+        help="Αντικατάσταση: το αρχείο αντικαθιστά όλο το πλέγμα. Συγχώνευση: μόνο τα μη κενά του αρχείου γράφουν πάνω στα υπάρχοντα.",
+    )
+    if up is not None and st.button("↪︎ Ενημέρωση πίνακα από CSV"):
+        try:
+            src = pd.read_csv(up)
+            # Δοκίμασε long-format bookings
+            required_long = {"year", "floor", "month", "day"}
+            if required_long.issubset(set(map(str.lower, src.columns))):
+                # Κανονικοποίηση ονομάτων
+                cols_map = {c: c.lower() for c in src.columns}
+                df = src.rename(columns=cols_map)
+                # Φτιάξε κενό grid
+                new_grid = empty_grid()
+                # Για κάθε εγγραφή σχημάτισε token YY ή YY:price και πρόσθεσέ το στο αντίστοιχο κελί
+                for _, r in df.iterrows():
+                    try:
+                        y = int(r["year"]) % 100
+                        m = str(r["month"]).strip()
+                        f = str(r["floor"]).strip()
+                        d = int(r["day"]) if not pd.isna(r["day"]) else None
+                        if m not in MONTHS or f not in FLOORS_DISPLAY or d not in DAYS:
+                            continue
+                        token = f"{y:02d}"
+                        if "price" in df.columns and not pd.isna(r.get("price")):
+                            token = f"{token}:{float(r['price']):g}"
+                        col = f"{m} {f}"
+                        prev = str(new_grid.at[d, col] or "").strip()
+                        new_grid.at[d, col] = (prev + ("," if prev and token else "") + token) if token else prev
+                    except Exception:
+                        continue
+            else:
+                # Προσπάθησε grid-format: μπορεί να έχει στήλη Ημέρα
+                df = src.copy()
+                if "Ημέρα" in df.columns:
+                    df = df.set_index("Ημέρα")
+                # Περιορίζουμε σε γνωστές στήλες
+                keep_cols = [c for c in df.columns if c in GRID_COLUMNS]
+                new_grid = empty_grid()
+                if keep_cols:
+                    new_grid.loc[new_grid.index, keep_cols] = df[keep_cols].astype("string").reindex(index=DAYS).fillna("")
+                else:
+                    st.error("Το CSV δεν αναγνωρίστηκε (ούτε bookings long-format ούτε grid-format με σωστές στήλες).")
+                    new_grid = None
+
+            if new_grid is not None:
+                base = st.session_state.get("grid_df", empty_grid())
+                if merge_mode.startswith("Αντικατάσταση"):
+                    st.session_state["grid_df"] = _norm_df(new_grid)
+                else:
+                    # Συγχώνευση: κρατάμε τα παλιά εκτός αν το νέο έχει μη κενό
+                    merged = base.copy().astype("string")
+                    for col in GRID_COLUMNS:
+                        left = merged[col].fillna("")
+                        right = new_grid[col].fillna("")
+                        merged[col] = np.where(right.astype(str).str.strip() != "", right, left)
+                    st.session_state["grid_df"] = _norm_df(merged)
+                st.success("Ο πίνακας ενημερώθηκε από το CSV. Μην ξεχάσεις να πατήσεις Αποθήκευση αν θες να γραφτεί στη βάση.")
+        except Exception as e:
+            st.error(f"Αποτυχία ανάγνωσης CSV: {e}")
 
 # ---------- Πίνακας (HTML‑styled) με φόρμα αποθήκευσης ----------
 main_tabs = st.tabs(["Καταχώρηση", "Στατιστικά"])  # δύο σελίδες: εισαγωγή & στατιστικά
@@ -386,38 +439,111 @@ with main_tabs[1]:
     if stats_df.empty:
         st.info("Δεν υπάρχουν ακόμη αποθηκευμένες κρατήσεις.")
     else:
-        per_year = stats_df.groupby("year").size().reset_index(name="κρατήσεις")
-        per_year_floor = stats_df.groupby(["year", "floor"]).size().reset_index(name="κρατήσεις")
+        # ---- Φίλτρα ----
+        floors_sel = st.multiselect("Όροφοι", FLOORS_DISPLAY, default=FLOORS_DISPLAY)
+        y_min, y_max = (int(stats_df["year"].min()), int(stats_df["year"].max())) if not stats_df.empty else (0, 0)
+        year_range = st.slider("Έτη", min_value=y_min, max_value=y_max, value=(y_min, y_max)) if y_min <= y_max else (y_min, y_max)
 
-        if stats_df["price"].notna().any():
-            price_info = (
-                stats_df.dropna(subset=["price"]).groupby("year")["price"].mean().reset_index()
+        # Καθαρισμός/ταξινόμηση μηνών
+        stats_df["month"] = pd.Categorical(stats_df["month"], categories=MONTHS, ordered=True)
+        # Εφαρμογή φίλτρων
+        fdf = stats_df[stats_df["floor"].isin(floors_sel)]
+        fdf = fdf[(fdf["year"] >= year_range[0]) & (fdf["year"] <= year_range[1])]
+
+        # ---- KPIs ----
+        per_year = fdf.groupby("year").size().reset_index(name="κρατήσεις")
+        per_year_floor = fdf.groupby(["year", "floor"]).size().reset_index(name="κρατήσεις")
+        total_all = int(per_year["κρατήσεις"].sum()) if not per_year.empty else 0
+        latest_year = int(per_year["year"].max()) if not per_year.empty else None
+
+        if fdf["price"].notna().any():
+            price_mean = (
+                fdf.dropna(subset=["price"]).groupby("year")["price"].mean().reset_index()
                 .rename(columns={"price": "μέση_τιμή"})
             )
+            revenue = fdf.dropna(subset=["price"]).groupby("year")["price"].sum().reset_index().rename(columns={"price": "έσοδα"})
         else:
-            price_info = pd.DataFrame(columns=["year", "μέση_τιμή"])  # κενό
+            price_mean = pd.DataFrame(columns=["year", "μέση_τιμή"])  # κενό
+            revenue = pd.DataFrame(columns=["year", "έσοδα"])  # κενό
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
-            total_all = int(per_year["κρατήσεις"].sum()) if not per_year.empty else 0
             st.metric("Σύνολο κρατήσεων", f"{total_all}")
         with col2:
-            latest_year = int(per_year["year"].max()) if not per_year.empty else None
             st.metric("Τελευταίο έτος", f"{latest_year}" if latest_year else "—")
         with col3:
-            if not price_info.empty:
-                last_y = int(price_info["year"].max())
-                mean_p = float(price_info.loc[price_info["year"] == last_y, "μέση_τιμή"].iloc[0])
+            if not price_mean.empty:
+                last_y = int(price_mean["year"].max())
+                mean_p = float(price_mean.loc[price_mean["year"] == last_y, "μέση_τιμή"].iloc[0])
                 st.metric(f"Μέση τιμή ({last_y})", f"{mean_p:.2f}")
             else:
                 st.metric("Μέση τιμή", "—")
+        with col4:
+            if not revenue.empty:
+                last_y = int(revenue["year"].max())
+                rev = float(revenue.loc[revenue["year"] == last_y, "έσοδα"].iloc[0])
+                st.metric(f"Έσοδα ({last_y})", f"{rev:.0f}")
+            else:
+                st.metric("Έσοδα", "—")
 
-        st.subheader("Ανά έτος")
-        st.dataframe(per_year, use_container_width=True)
+        # ---- Διαγράμματα ----
+        st.subheader("Κρατήσεις ανά έτος")
+        if not per_year.empty:
+            st.bar_chart(per_year.set_index("year"))
+        else:
+            st.info("Δεν υπάρχουν δεδομένα για το εύρος ετών/ορόφων που επέλεξες.")
 
-        st.subheader("Ανά έτος & όροφο")
-        st.dataframe(per_year_floor, use_container_width=True)
+        st.subheader("Κρατήσεις ανά έτος & όροφο")
+        if not per_year_floor.empty:
+            # Pivot για stacked visualization
+            pv = per_year_floor.pivot(index="year", columns="floor", values="κρατήσεις").fillna(0)
+            st.bar_chart(pv)
+        else:
+            st.info("Δεν υπάρχουν δεδομένα για τους ορόφους που επέλεξες.")
 
-        if not price_info.empty:
+        # Μηνιαία εποχικότητα (σωρευτικά)
+        st.subheader("Κρατήσεις ανά μήνα (εποχικότητα)")
+        per_month = fdf.groupby("month").size().reindex(MONTHS).fillna(0)
+        st.line_chart(per_month)
+
+        # Θερμικός χάρτης: Ημέρα × Μήνας (πλήθος κρατήσεων)
+        st.subheader("Heatmap: Ημέρα × Μήνας")
+        grid_counts = (
+            fdf.groupby(["month", "day"]).size().unstack(fill_value=0).reindex(index=MONTHS)
+        )
+        fig1, ax1 = plt.subplots()
+        im = ax1.imshow(grid_counts.values, aspect="auto")  # default colormap
+        ax1.set_yticks(range(len(MONTHS)))
+        ax1.set_yticklabels(MONTHS)
+        ax1.set_xlabel("Ημέρα")
+        ax1.set_ylabel("Μήνας")
+        st.pyplot(fig1, clear_figure=True)
+
+        # Κατανομή τιμών (αν υπάρχουν)
+        if fdf["price"].notna().any():
+            st.subheader("Κατανομή Τιμών")
+            prices = fdf["price"].dropna()
+            fig2, ax2 = plt.subplots()
+            ax2.hist(prices, bins=20)
+            ax2.set_xlabel("Τιμή")
+            ax2.set_ylabel("Συχνότητα")
+            st.pyplot(fig2, clear_figure=True)
+
             st.subheader("Μέση τιμή ανά έτος")
-            st.dataframe(price_info, use_container_width=True)
+            st.line_chart(price_mean.set_index("year"))
+
+            st.subheader("Έσοδα ανά έτος")
+            st.bar_chart(revenue.set_index("year"))
+
+        # Πίνακες δεδομένων
+        with st.expander("Πίνακες δεδομένων"):
+            st.write("**Ανά έτος**")
+            st.dataframe(per_year, use_container_width=True)
+            st.write("**Ανά έτος & όροφο**")
+            st.dataframe(per_year_floor, use_container_width=True)
+            if not price_mean.empty:
+                st.write("**Μέση τιμή ανά έτος**")
+                st.dataframe(price_mean, use_container_width=True)
+            if not revenue.empty:
+                st.write("**Έσοδα ανά έτος**")
+                st.dataframe(revenue, use_container_width=True)
