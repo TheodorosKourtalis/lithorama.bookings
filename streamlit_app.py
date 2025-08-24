@@ -34,7 +34,6 @@ else:
     DB_PATH = Path("bookings.db")
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-# Μήνες (Απρίλιος–Οκτώβριος)
 MONTHS = [
     "Απρίλιος",
     "Μάιος",
@@ -46,6 +45,17 @@ MONTHS = [
 ]
 DAYS = list(range(1, 32))  # 1–31
 
+# Μήνες EN για αρχεία (όνομα αρχείου)
+MONTH_EN = {
+    "Απρίλιος": "APRIL",
+    "Μάιος": "MAY",
+    "Ιούνιος": "JUNE",
+    "Ιούλιος": "JULY",
+    "Αύγουστος": "AUGUST",
+    "Σεπτέμβριος": "SEPTEMBER",
+    "Οκτώβριος": "OCTOBER",
+}
+
 # Όροφοι (εμφάνιση)
 FLOORS_DISPLAY = ["Ισόγειο", "Α", "Β"]
 
@@ -56,8 +66,20 @@ FLOOR_DB_VALUE = {
     "Β": "Β",
 }
 
-# Παράγουμε τις στήλες του πλέγματος ως (Μήνας + space + Όροφος)
 GRID_COLUMNS = [f"{m} {f}" for m in MONTHS for f in FLOORS_DISPLAY]
+
+# -------- Per-year & per‑month file layout --------
+# One Excel per (year, month): dev_{YYYY}_{MONTHEN}.xlsx
+
+DATA_DIR = Path(".")
+BOOKINGS_XLSX = DATA_DIR / "bookings.xlsx"
+TOKEN_DEV_RE = re.compile(r"^(\d+(?:\.\d+)?):(\d{4});([A-Z]+)$")
+
+def month_en_of(month_gr: str) -> str:
+    return MONTH_EN[month_gr]
+
+def dev_path_for(year: int, month_en: str) -> Path:
+    return DATA_DIR / f"dev_{int(year)}_{month_en.upper()}.xlsx"
 
 # --- Ρυθμίσεις σελίδας & CSS αισθητικής ---
 st.set_page_config(page_title=APP_TITLE, page_icon="📊", layout="wide")
@@ -232,28 +254,79 @@ def empty_grid() -> pd.DataFrame:
     return grid
 
 
-def load_grid_df() -> pd.DataFrame:
-    try:
-        with get_conn() as c:
-            df = pd.read_sql_query("SELECT month, floor, day, entries FROM cells", c)
-    except Exception:
-        # Αν για οποιονδήποτε λόγο λείπει ο πίνακας ή υπάρχει παλιά έκδοση, ξαναφτιάξ’ τον και δώσε κενό πλέγμα
-        try:
-            ensure_schema()
-        except Exception:
-            pass
-        return empty_grid()
-    if df.empty:
-        return empty_grid()
+# --- Helpers for dev token parsing/serialization (for per-year/month files) ---
+def parse_dev_tokens(cell: str) -> list[dict]:
+    """Parse tokens of form 100:2024;APRIL into dicts."""
+    if not cell or not isinstance(cell, str):
+        return []
+    toks = []
+    for t in cell.split(","):
+        t = t.strip()
+        m = TOKEN_DEV_RE.match(t)
+        if m:
+            toks.append({
+                "price": float(m.group(1)),
+                "year": int(m.group(2)),
+                "month_en": m.group(3).upper(),
+            })
+    return toks
+
+def serialize_dev(toks: list[dict]) -> str:
+    return ",".join(f"{float(e['price']):g}:{int(e['year'])};{e['month_en'].upper()}" for e in toks if "price" in e and "year" in e and "month_en" in e)
+
+def dedupe_by_key(toks: list[dict]) -> list[dict]:
+    # Remove duplicates by (price, year, month_en)
+    seen = set()
+    out = []
+    for e in toks:
+        key = (float(e["price"]), int(e["year"]), e["month_en"].upper())
+        if key not in seen:
+            out.append(e)
+            seen.add(key)
+    return out
+
+def load_grid_df_for_year(year: int) -> pd.DataFrame:
     grid = empty_grid()
-    for _, row in df.iterrows():
-        col = f"{row['month']} {row['floor']}"
-        d = int(row["day"])
-        if col in grid.columns and d in grid.index:
-            grid.at[d, col] = row["entries"] or ""
-    # Εξαναγκάζουμε string dtype ώστε να μην εμφανίζονται NaN/παλιές τιμές
-    grid = grid.astype("string")
-    return grid
+    # For each month column (Ισόγειο/Α/Β) try to read dev_{year}_{MONTHEN}.xlsx
+    for m in MONTHS:
+        m_en = month_en_of(m)
+        fpath = dev_path_for(year, m_en)
+        if not fpath.exists():
+            continue
+        try:
+            df = pd.read_excel(fpath, sheet_name="grid")
+        except Exception:
+            continue
+        if "Ημέρα" in df.columns:
+            df = df.set_index("Ημέρα")
+        # Expect columns exactly ["Ισόγειο", "Α", "Β"]
+        for floor in FLOORS_DISPLAY:
+            colname = f"{m} {floor}"
+            if floor in df.columns:
+                # normalize + dedupe by key just in case
+                col_series = df[floor].astype("string").reindex(index=DAYS).fillna("")
+                cleaned = []
+                for d in DAYS:
+                    val = str(col_series.loc[d] or "").strip()
+                    if val:
+                        parts = [p.strip() for p in val.split(",") if p and p.strip()]
+                        # ensure tokens are forced to current file's year-month key
+                        toks = []
+                        for p in parts:
+                            # if user typed bare number, convert to token
+                            mm = re.match(r"^\d+(?:\.\d+)?$", p)
+                            if mm:
+                                toks.append(f"{mm.group(0)}:{int(year)};{m_en}")
+                            else:
+                                # keep only if already correct year;month
+                                mm2 = TOKEN_DEV_RE.match(p)
+                                if mm2 and int(mm2.group(2)) == int(year) and mm2.group(3).upper() == m_en:
+                                    toks.append(f"{float(mm2.group(1)):g}:{int(mm2.group(2))};{mm2.group(3).upper()}")
+                        val = ",".join(toks)
+                        val = serialize_dev(dedupe_by_key(parse_dev_tokens(val)))
+                    cleaned.append(val)
+                grid.loc[DAYS, colname] = cleaned
+    return _norm_df(grid)
 
 
 def _norm_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -262,38 +335,77 @@ def _norm_df(df: pd.DataFrame) -> pd.DataFrame:
     df2 = df2.astype("string").fillna("")
     return df2
 
-def save_grid_df(grid: pd.DataFrame) -> Tuple[bool, Optional[str]]:
-    grid = _norm_df(grid)
+def save_grid_df_for_year(grid: pd.DataFrame, year: int) -> tuple[bool, str | None]:
+    grid = _norm_df(grid).astype("string").fillna("")
     try:
-        with get_conn() as c:
-            cur = c.cursor()
-            # Upsert όλων των κελιών
-            for d in grid.index:
-                for col in grid.columns:
-                    val = grid.at[d, col]
-                    entries = "" if pd.isna(val) else str(val).strip()
-                    month, floor_disp = split_month_floor(col)
-                    floor_db = FLOOR_DB_VALUE[floor_disp]
-                    cur.execute(
-                        "INSERT INTO cells(month, floor, day, entries) VALUES(?,?,?,?)\n"
-                        "ON CONFLICT(month,floor,day) DO UPDATE SET entries=excluded.entries",
-                        (month, floor_db, int(d), entries),
-                    )
-            # Αναδημιουργία bookings (σβήσε όλα και ξαναπέρασε τα parsed)
-            cur.execute("DELETE FROM bookings")
-            for d in grid.index:
-                for col in grid.columns:
-                    val = grid.at[d, col]
-                    entries = "" if pd.isna(val) else str(val).strip()
-                    month, floor_disp = split_month_floor(col)
-                    floor_db = FLOOR_DB_VALUE[floor_disp]
-                    parsed = parse_cell_entries(entries)
-                    for (year, price) in parsed:
-                        cur.execute(
-                            "INSERT INTO bookings(year, floor, month, day, price) VALUES(?,?,?,?,?)",
-                            (year, floor_db, month, int(d), price),
-                        )
-            c.commit()
+        # Write every month of the selected year to its own dev_{YYYY}_{MONTH}.xlsx
+        for m in MONTHS:
+            m_en = month_en_of(m)
+            fpath = dev_path_for(year, m_en)
+            # Build a narrow frame for this month: Ημέρα + three floors
+            out = pd.DataFrame(index=DAYS)
+            out.index.name = "Ημέρα"
+            for floor in FLOORS_DISPLAY:
+                colname = f"{m} {floor}"
+                # ensure tokens are normalized *to this year & month*
+                col_vals = []
+                for d in DAYS:
+                    raw = str(grid.at[d, colname] or "").strip()
+                    if raw == "":
+                        col_vals.append("")
+                        continue
+                    # accept either bare number or tokens, but force to single key (year;month)
+                    mnum = re.search(r"\d+(?:\.\d+)?", raw)
+                    if mnum and raw.strip() == mnum.group(0):
+                        token = f"{float(mnum.group(0)):g}:{int(year)};{m_en}"
+                        col_vals.append(token)
+                    else:
+                        toks = parse_dev_tokens(raw)
+                        # filter to this (year, month)
+                        toks = [e for e in toks if int(e["year"]) == int(year) and e["month_en"].upper() == m_en]
+                        toks = dedupe_by_key(toks)
+                        col_vals.append(serialize_dev(toks))
+                out[floor] = col_vals
+            # write excel
+            out = out.reset_index()
+            with pd.ExcelWriter(fpath, engine="openpyxl") as xl:
+                out.to_excel(xl, sheet_name="grid", index=False)
+        # Also refresh combined bookings.xlsx by scanning all dev_{YYYY}_{MONTH}.xlsx files in DATA_DIR
+        recs = []
+        for fp in DATA_DIR.glob("dev_*_*.xlsx"):
+            m = re.match(r"dev_(\d{4})_([A-Z]+)\.xlsx$", fp.name)
+            if not m:
+                continue
+            y = int(m.group(1))
+            month_en = m.group(2)
+            # map EN back to GR for unified stats
+            month_gr = next((gr for gr, en in MONTH_EN.items() if en == month_en), None)
+            if not month_gr:
+                continue
+            try:
+                dfm = pd.read_excel(fp, sheet_name="grid")
+            except Exception:
+                continue
+            if "Ημέρα" in dfm.columns:
+                dfm = dfm.set_index("Ημέρα")
+            for floor in FLOORS_DISPLAY:
+                if floor not in dfm.columns:
+                    continue
+                for day in DAYS:
+                    val = str(dfm.at[day, floor] if day in dfm.index else "")
+                    toks = dedupe_by_key(parse_dev_tokens(val))
+                    for e in toks:
+                        # each token is already bound to a unique (year;month)
+                        recs.append({
+                            "year": int(e["year"]),
+                            "floor": floor,
+                            "month": month_gr,
+                            "day": int(day),
+                            "price": float(e["price"]),
+                        })
+        bookings = pd.DataFrame(recs, columns=["year", "floor", "month", "day", "price"]).sort_values(["year", "month", "floor", "day"]) if recs else pd.DataFrame(columns=["year", "floor", "month", "day", "price"]) 
+        with pd.ExcelWriter(BOOKINGS_XLSX, engine="openpyxl") as xl:
+            bookings.to_excel(xl, sheet_name="bookings", index=False)
         return True, None
     except Exception as e:
         return False, str(e)
@@ -418,8 +530,11 @@ with st.sidebar:
 main_tabs = st.tabs(["Καταχώρηση", "Στατιστικά"])  # δύο σελίδες: εισαγωγή & στατιστικά
 
 with main_tabs[0]:
-    if "grid_df" not in st.session_state:
-        st.session_state["grid_df"] = load_grid_df()
+    # Reload grid whenever the selected year changes
+    current_year = st.number_input("Έτος καταχώρησης", min_value=2000, max_value=2100, value=pd.Timestamp.today().year, step=1)
+    session_key = f"grid_df::{current_year}"
+    if session_key not in st.session_state:
+        st.session_state[session_key] = load_grid_df_for_year(int(current_year))
 
     st.markdown(
         """
@@ -431,23 +546,18 @@ with main_tabs[0]:
         unsafe_allow_html=True,
     )
 
-    # Επιλογή Έτους για καταχώρηση (ώστε ο χρήστης να γράφει μόνο τιμές π.χ. 100)
-    current_year = st.number_input("Έτος καταχώρησης", min_value=2000, max_value=2100, value=pd.Timestamp.today().year, step=1)
     yy_current = int(current_year) % 100
     st.caption("Αν γράψεις μόνο αριθμούς (π.χ. 100), θα θεωρηθεί τιμή για το επιλεγμένο έτος.")
 
-    # Βοηθητική για labels
     def _label(month: str, floor: str, day: int) -> str:
         return f"{month} {floor} — {day}"
 
     with st.form("booking_form", clear_on_submit=False):
         tabs = st.tabs(MONTHS)
-        # Θα συλλέξουμε τις τιμές εδώ
         new_values = {}
         for i, m in enumerate(MONTHS):
             with tabs[i]:
                 st.markdown(f"### {m}")
-                # Headers aligned with the same column layout (mobile friendly)
                 header_cols = st.columns([0.7, 1, 1, 1], gap="small")
                 header_cols[0].markdown("<div class='col-header'>Ημέρα</div>", unsafe_allow_html=True)
                 header_cols[1].markdown("<div class='col-header'>Ισόγειο</div>", unsafe_allow_html=True)
@@ -459,47 +569,46 @@ with main_tabs[0]:
                     cols[0].markdown(f"<div class='day-cell'>{d}</div>", unsafe_allow_html=True)
                     for j, f in enumerate(FLOORS_DISPLAY, start=1):
                         colname = f"{m} {f}"
-                        raw_initial = st.session_state["grid_df"].at[d, colname] if (d in st.session_state["grid_df"].index and colname in st.session_state["grid_df"].columns) else ""
+                        raw_initial = st.session_state[session_key].at[d, colname] if (d in st.session_state[session_key].index and colname in st.session_state[session_key].columns) else ""
                         initial = display_price_for_year(str(raw_initial or ""), int(current_year))
                         key = f"cell::{m}::{f}::{d}"
                         val = cols[j].text_input(_label(m, f, d), value=str(initial or ""), key=key, label_visibility="collapsed")
                         new_values[(d, colname)] = val
         submitted = st.form_submit_button("💾 Αποθήκευση", type="primary")
 
-    # Αν πατήθηκε Αποθήκευση, αναδομούμε DataFrame και γράφουμε στη ΒΔ
     if submitted:
-        updated = st.session_state["grid_df"].copy()
+        updated = st.session_state[session_key].copy()
         for (d, colname), v in new_values.items():
             if colname not in updated.columns or d not in updated.index:
                 continue
             new_text = str(v or "").strip()
-            # Δεχόμαστε μόνο μία αριθμητική τιμή ανά κελί
             mnum = re.search(r"\d+(?:\.\d+)?", new_text)
             if mnum:
                 price_val = float(mnum.group(0))
-                # Γράψε ΜΟΝΟ το τρέχον έτος ως ένα token
                 updated.at[d, colname] = serialize_entries([(int(current_year), price_val)])
             else:
-                # Κενό πεδίο → καθάρισμα κελιού
                 updated.at[d, colname] = ""
-        st.session_state["grid_df"] = updated.astype("string").fillna("")
-        ok, err = save_grid_df(st.session_state["grid_df"])
+        st.session_state[session_key] = updated.astype("string").fillna("")
+        ok, err = save_grid_df_for_year(st.session_state[session_key], int(current_year))
         if ok:
             st.success("Αποθηκεύτηκαν οι κρατήσεις.")
         else:
             st.error(f"Σφάλμα αποθήκευσης: {err}")
 
+        # Note for per-month files (above download buttons)
+        st.info("Για το επιλεγμένο έτος δημιουργήθηκαν/ενημερώθηκαν αρχεία ανά μήνα: dev_{YYYY}_{MONTH}.xlsx. Το bookings.xlsx είναι ο ενιαίος πίνακας για όλα τα έτη/μήνες.")
+
         # Προσφέρουμε export μετά την επιτυχή αποθήκευση
         if ok:
-            with get_conn() as c:
-                bookings = pd.read_sql_query("SELECT year, floor, month, day, price FROM bookings", c)
-            csv_bytes = bookings.to_csv(index=False).encode("utf-8-sig")
-            st.download_button(
-                "⬇️ Λήψη bookings.csv",
-                data=csv_bytes,
-                file_name="bookings.csv",
-                mime="text/csv",
-            )
+            if BOOKINGS_XLSX.exists():
+                bookings = pd.read_excel(BOOKINGS_XLSX, sheet_name="bookings")
+                csv_bytes = bookings.to_csv(index=False).encode("utf-8-sig")
+                st.download_button(
+                    "⬇️ Λήψη bookings.csv",
+                    data=csv_bytes,
+                    file_name="bookings.csv",
+                    mime="text/csv",
+                )
 
 # ---------- Στατιστικά (δεύτερη σελίδα) ----------
 with main_tabs[1]:
