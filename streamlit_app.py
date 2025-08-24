@@ -1149,7 +1149,7 @@ with main_tabs[1]:
                             }
                         },
                         {
-                            "params": [{"name": "pick_mix", "select": {"type": "point", "fields": ["month"], "on": "click", "nearest": true, "clear": "dblclick"}}],
+                            "params": [{"name": "pick_mix", "select": {"type": "point", "fields": ["month"], "on": "click", "nearest": True, "clear": "dblclick"}}],
                             "mark": {"type": "rule", "strokeDash": [4,4]},
                             "transform": [{"filter": {"param": "pick_mix"}}],
                             "encoding": {
