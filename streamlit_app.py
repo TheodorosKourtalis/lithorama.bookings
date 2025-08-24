@@ -197,6 +197,25 @@ def serialize_entries(entries: List[Tuple[int, Optional[float]]]) -> str:
             toks.append(f"{yy:02d}:{float(p):g}")
     return ",".join(toks)
 
+# --- Helpers: Επιλογή ενός token και εμφάνιση τιμής για το τρέχον έτος ---
+def select_single_token(tokens: List[Tuple[int, Optional[float]]], current_year: int) -> Optional[Tuple[int, Optional[float]]]:
+    """Επέλεξε ένα token: προτεραιότητα στο τρέχον έτος, αλλιώς της νεότερης χρονιάς."""
+    if not tokens:
+        return None
+    cur = [t for t in tokens if int(t[0]) == int(current_year)]
+    if cur:
+        return cur[-1]
+    return max(tokens, key=lambda t: int(t[0]))
+
+def display_price_for_year(cell_text: str, current_year: int) -> str:
+    """Εμφάνισε μόνο την τιμή του επιλεγμένου έτους (ή της νεότερης αν δεν υπάρχει τρέχον), χωρίς YY."""
+    toks = parse_cell_entries(cell_text)
+    chosen = select_single_token(toks, current_year)
+    if chosen is None:
+        return ""
+    _y, p = chosen
+    return "" if p is None else (f"{p:g}")
+
 # ---------- Βοηθητικά για στήλες ----------
 
 def split_month_floor(col: str) -> Tuple[str, str]:
@@ -440,7 +459,8 @@ with main_tabs[0]:
                     cols[0].markdown(f"<div class='day-cell'>{d}</div>", unsafe_allow_html=True)
                     for j, f in enumerate(FLOORS_DISPLAY, start=1):
                         colname = f"{m} {f}"
-                        initial = st.session_state["grid_df"].at[d, colname] if (d in st.session_state["grid_df"].index and colname in st.session_state["grid_df"].columns) else ""
+                        raw_initial = st.session_state["grid_df"].at[d, colname] if (d in st.session_state["grid_df"].index and colname in st.session_state["grid_df"].columns) else ""
+                        initial = display_price_for_year(str(raw_initial or ""), int(current_year))
                         key = f"cell::{m}::{f}::{d}"
                         val = cols[j].text_input(_label(m, f, d), value=str(initial or ""), key=key, label_visibility="collapsed")
                         new_values[(d, colname)] = val
@@ -453,54 +473,15 @@ with main_tabs[0]:
             if colname not in updated.columns or d not in updated.index:
                 continue
             new_text = str(v or "").strip()
-            # Παλιό περιεχόμενο κελιάς
-            old_text = str(updated.at[d, colname] or "").strip()
-            old_parsed = parse_cell_entries(old_text)
-            # Κρατάμε tokens από παλιά που ΔΕΝ ανήκουν στο τρέχον έτος
-            keep_old = [(y, p) for (y, p) in old_parsed if (int(y) % 100) != yy_current]
-            # Νέα tokens από input: μπορεί να είναι με έτος (YY ή YY:price) ή μόνο τιμές
-            entered = [t.strip() for t in re.split(r",|;|/|\n", new_text) if t.strip()]
-            new_year_tokens: List[Tuple[int, Optional[float]]] = []
-            for tok in entered:
-                m = TOKEN_RE.match(tok)
-                if m:
-                    yy, price = m.group(1), m.group(2)
-                    # ΔΕΧΟΜΑΣΤΕ μόνο tokens του ΤΡΕΧΟΝΤΟΣ έτους από το input· τα υπόλοιπα τα κρατάμε από keep_old
-                    if int(yy) != yy_current:
-                        continue
-                    y_full = 2000 + int(yy)
-                    price_val = float(price) if price is not None else None
-                    new_year_tokens.append((y_full, price_val))
-                else:
-                    # Μόνο τιμή → δέσε την στο επιλεγμένο έτος
-                    if re.fullmatch(r"\d+(?:\.\d+)?", tok):
-                        new_year_tokens.append((int(current_year), float(tok)))
-                    else:
-                        # αγνόησε μη έγκυρο token
-                        pass
-            # Απομάκρυνση ακριβώς ίδιων διπλοεγγραφών τρέχοντος έτους
-            dedup: List[Tuple[int, Optional[float]]] = []
-            seen = set()
-            for y, p in new_year_tokens:
-                key = (int(y), float(p) if p is not None else None)
-                if key in seen:
-                    continue
-                seen.add(key)
-                dedup.append((y, p))
-            # ΕΝΑ (1) value ανά κελί — καθάρισμα πολλαπλών τιμών
-            # Συνένωση υποψήφιων tokens
-            seq = keep_old + dedup
-            chosen: Optional[Tuple[int, Optional[float]]] = None
-            if seq:
-                # Προτίμηση: τιμή τρέχοντος έτους (αν υπάρχει) — πάρ’ την τελευταία που δόθηκε
-                cur_candidates = [t for t in seq if int(t[0]) == int(current_year)]
-                if cur_candidates:
-                    chosen = cur_candidates[-1]
-                else:
-                    # Αλλιώς κράτα την πιο πρόσφατη χρονιά (μέγιστο year)
-                    chosen = max(seq, key=lambda t: int(t[0]))
-            # Αποθήκευση μόνο ενός token (χωρίς κόμματα). Αν δεν υπάρχει τίποτα, άδειο
-            updated.at[d, colname] = serialize_entries([chosen]) if chosen else ""
+            # Δεχόμαστε μόνο μία αριθμητική τιμή ανά κελί
+            mnum = re.search(r"\d+(?:\.\d+)?", new_text)
+            if mnum:
+                price_val = float(mnum.group(0))
+                # Γράψε ΜΟΝΟ το τρέχον έτος ως ένα token
+                updated.at[d, colname] = serialize_entries([(int(current_year), price_val)])
+            else:
+                # Κενό πεδίο → καθάρισμα κελιού
+                updated.at[d, colname] = ""
         st.session_state["grid_df"] = updated.astype("string").fillna("")
         ok, err = save_grid_df(st.session_state["grid_df"])
         if ok:
