@@ -24,6 +24,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
+from pandas.util import hash_pandas_object
 
 APP_TITLE = "📅 Κρατήσεις Διαμερισμάτων (Απρ–Οκτ)"
 # Χρησιμοποιούμε επίμονο φάκελο στο Streamlit Cloud (/mount/data) αν υπάρχει/είναι εγγράψιμος
@@ -249,6 +250,8 @@ with st.sidebar:
     )
     st.caption("Παράδειγμα: 22, 22:150, 23")
 
+    live_stats = st.toggle("Ζωντανά στατιστικά (μπορεί να καθυστερεί)", value=False, help="Αν είναι ενεργό, τα στατιστικά υπολογίζονται σε κάθε αλλαγή. Απενεργοποίησέ το για πιο ομαλή επεξεργασία.")
+
     if st.button("💾 Αποθήκευση", type="primary"):
         save_grid_df(st.session_state["grid_df"])
         st.success("Αποθηκεύτηκαν οι κρατήσεις και ενημερώθηκαν τα στατιστικά.")
@@ -264,6 +267,13 @@ with st.sidebar:
             file_name="bookings.csv",
             mime="text/csv",
         )
+
+def _frames_equal(a: pd.DataFrame, b: pd.DataFrame) -> bool:
+    if a.shape != b.shape or list(a.columns) != list(b.columns) or list(a.index) != list(b.index):
+        return False
+    return hash_pandas_object(a.astype("string").stack(), index=True).equals(
+        hash_pandas_object(b.astype("string").stack(), index=True)
+    )
 
 # ---------- Αρχικός πίνακας (Data Editor) ----------
 if "grid_df" not in st.session_state:
@@ -289,25 +299,26 @@ edited = st.data_editor(
     key="booking_editor",
     column_config=col_cfg,
 )
-# Ενημέρωση state πάντα ως string dtype (αποφεύγει NaN και επανεμφάνιση προηγούμενης τιμής)
-st.session_state["grid_df"] = edited.astype("string")
+# Ενημέρωση state ΜΟΝΟ αν όντως άλλαξε κάτι (αποφεύγει διπλές ενημερώσεις/lag)
+current_df = st.session_state["grid_df"].astype("string")
+new_df = edited.astype("string")
+if not _frames_equal(current_df, new_df):
+    st.session_state["grid_df"] = new_df
 
 # ---------- Στατιστικά ----------
-st.markdown(
-    """
-<div class="card">
-  <h3>📈 Στατιστικά</h3>
-  <div class="small-muted">Υπολογίζονται από τα αποθηκευμένα δεδομένα (πάτα «Αποθήκευση» για ενημέρωση).</div>
-</div>
-""",
-    unsafe_allow_html=True,
-)
-
-with get_conn() as c:
-    stats_df = pd.read_sql_query("SELECT year, floor, month, day, price FROM bookings", c)
+if live_stats:
+    with get_conn() as c:
+        stats_df = pd.read_sql_query("SELECT year, floor, month, day, price FROM bookings", c)
+else:
+    # Όταν τα ζωντανά στατιστικά είναι κλειστά, δείχνουμε τα τελευταία αποθηκευμένα μόνο μετά από Αποθήκευση
+    try:
+        with get_conn() as c:
+            stats_df = pd.read_sql_query("SELECT year, floor, month, day, price FROM bookings", c)
+    except Exception:
+        stats_df = pd.DataFrame(columns=["year", "floor", "month", "day", "price"])  # κενό
 
 if stats_df.empty:
-    st.info("Δεν υπάρχουν αποθηκευμένες κρατήσεις ακόμη.")
+    st.info("Δεν υπάρχουν αποθηκευμένες κρατήσεις ακόμη ή τα ζωντανά στατιστικά είναι απενεργοποιημένα.")
 else:
     # Σύνολα ανά έτος
     per_year = stats_df.groupby("year").size().reset_index(name="κρατήσεις")
