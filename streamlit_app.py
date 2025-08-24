@@ -250,7 +250,6 @@ edited = st.data_editor(
 # Ενημέρωσε το state με την τρέχουσα μορφή
 st.session_state["grid_df"] = edited
 
-# ---------- Στατιστικά ----------
 st.markdown("""
 <div class="card">
   <h3>📈 Στατιστικά</h3>
@@ -259,31 +258,45 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 col1, col2, col3 = st.columns([1,1,1])
+
 with get_conn() as c:
-    stats_df = pd.read_sql_query(
-        "SELECT year, floor, month, day, price FROM bookings", c
-    )
+    stats_df = pd.read_sql_query("SELECT year, floor, month, day, price FROM bookings", c)
 
 if stats_df.empty:
     st.info("Δεν υπάρχουν αποθηκευμένες κρατήσεις ακόμη.")
 else:
-    # Σύνολα ανά έτος
-    per_year = stats_df.groupby("year").size().reset_index(name="κρατήσεις")
-    # Σύνολα ανά έτος & όροφο
-    per_year_floor = (
-        stats_df.groupby(["year", "floor"]).size().reset_index(name="κρατήσεις")
-    )
+    # --- κρατήσεις ανά έτος ---
+    ανα_ετος = stats_df.groupby("year").size().reset_index(name="κρατήσεις")
 
-    # Μέσος όρος τιμής (αν έχουν εισαχθεί τιμές)
-    price_info = None
-    if stats_df["price"].notna().any():
-        price_info = (
-            stats_df.dropna(subset=["price"]).groupby("year")["price"].mean().reset_index()
-        )
+    # --- κρατήσεις ανά έτος & όροφο ---
+    ανα_ετος_οροφος = stats_df.groupby(["year", "floor"]).size().reset_index(name="κρατήσεις")
 
-    # Εμφάνιση μετρικών
+    # --- μετρικά ---
     with col1:
-        total_all = int(per_year["κρατήσεις"].sum()) if not per_year.empty else 0
-        st.metric("Σύνολο κρατήσεων (όλα τα έτη)", f"{total_all}")
+        συνολο = int(ανα_ετος["κρατήσεις"].sum()) if not ανα_ετος.empty else 0
+        st.metric("Σύνολο κρατήσεων (όλα τα έτη)", f"{συνολο}")
+
     with col2:
-        v2022 = int(per_year.loc[per_year["year"] == 2022, "κ
+        κ22 = int(ανα_ετος.loc[ανα_ετος["year"] == 2022, "κρατήσεις"].sum()) if 2022 in ανα_ετος["year"].values else 0
+        κ23 = int(ανα_ετος.loc[ανα_ετος["year"] == 2023, "κρατήσεις"].sum()) if 2023 in ανα_ετος["year"].values else 0
+        st.metric("2022 vs 2023", f"{κ22} → {κ23}")
+
+    with col3:
+        συνολο_οροφοι = stats_df.groupby("floor").size()
+        κειμενο = ", ".join(f"{FLOOR_LABELS.get(k,k)}: {int(v)}" for k,v in συνολο_οροφοι.items()) if not συνολο_οροφοι.empty else "—"
+        st.metric("Ανά όροφο (σύνολο)", κειμενο)
+
+    # --- γραφήματα ---
+    st.markdown("**Κρατήσεις ανά έτος**")
+    st.bar_chart(ανα_ετος.set_index("year")["κρατήσεις"])
+
+    st.markdown("**Κρατήσεις ανά έτος & όροφο**")
+    πινακας = ανα_ετος_οροφος.pivot(index="year", columns="floor", values="κρατήσεις").fillna(0).astype(int)
+    πινακας = πινακας.rename(columns=FLOOR_LABELS)  # Α/Β/Γ
+    st.bar_chart(πινακας)
+
+    # --- μέσες τιμές ---
+    if stats_df["price"].notna().any():
+        μεσες = stats_df.dropna(subset=["price"]).groupby("year")["price"].mean().reset_index()
+        st.markdown("**Μέση τιμή ανά έτος** (μόνο όπου δηλώθηκε τιμή)")
+        st.line_chart(μεσες.set_index("year")["price"])
