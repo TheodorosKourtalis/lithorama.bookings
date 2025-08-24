@@ -443,24 +443,23 @@ def _frames_equal(a: pd.DataFrame, b: pd.DataFrame) -> bool:
 
 # ---------- Sidebar (λειτουργίες) ----------
 with st.sidebar:
-    # Ανεξάρτητη επιλογή έτους για τις λειτουργίες του Sidebar
-    sidebar_year = st.selectbox("Έτος (Sidebar)", [2022, 2023, 2024, 2025], index=2, key="sidebar_year_select")
-    session_key = f"grid_df::{sidebar_year}"
-    if session_key not in st.session_state:
-        st.session_state[session_key] = load_grid_df_for_year(int(sidebar_year))
-
     st.header("ℹ️ Οδηγίες")
     st.markdown(
-        "Γράψε σε κελιά τιμές όπως **22** ή **22:120**. Χώρισε πολλαπλές τιμές με κόμμα.\n\n"
-        "Οι αλλαγές **δεν** αποθηκεύονται αυτόματα — πατάς **Αποθήκευση** στο κάτω μέρος του πίνακα.")
+        "Πληκτρολόγησε **μόνο τιμή** (π.χ. 80). Η εφαρμογή την αποθηκεύει ως token **τιμή:YYYY;MONTH** (π.χ. 80:2023;AUGUST).\n\n"
+        "Οι αλλαγές **δεν** αποθηκεύονται αυτόματα — πάτησε **Αποθήκευση** στο κάτω μέρος του πίνακα.")
     st.markdown("—")
-    # Excel-only upload + merge/replace logic
+
     st.subheader("Εισαγωγή από Excel")
+    import_year = st.selectbox("Έτος (για εισαγωγή)", [2022, 2023, 2024, 2025], index=2, key="import_year_select")
+    session_key_import = f"grid_df::{import_year}"
+    if session_key_import not in st.session_state:
+        st.session_state[session_key_import] = load_grid_df_for_year(int(import_year))
+
     up = st.file_uploader(
         "Επίλεξε Excel",
         type=["xlsx", "xls"],
         help=(
-            "Δέχεται είτε long-format (στήλες: year, floor, month, day, price) σε φύλλο 1, "
+            "Δέχεται είτε long-format (στήλες: year, floor, month, day, price) στο πρώτο φύλλο, "
             "είτε grid-format με στήλες τύπου 'Μάιος Ισόγειο', 'Μάιος Α', 'Μάιος Β' και προαιρετική στήλη 'Ημέρα'."
         ),
     )
@@ -469,24 +468,21 @@ with st.sidebar:
         ["Αντικατάσταση όλων", "Συγχώνευση (μόνο μη κενά)"],
         index=1,
         help=(
-            "Αντικατάσταση: το αρχείο αντικαθιστά όλο το πλέγμα στο έτος του Sidebar.\n"
+            "Αντικατάσταση: το αρχείο αντικαθιστά όλο το πλέγμα στο επιλεγμένο έτος.\n"
             "Συγχώνευση: μόνο τα μη κενά του αρχείου γράφουν πάνω στα υπάρχοντα."
         ),
     )
     if up is not None and st.button("↪︎ Ενημέρωση πίνακα από Excel"):
         try:
-            # Διαβάζουμε το πρώτο φύλλο (sheet 0)
             src = pd.read_excel(up, sheet_name=0)
             df = src.copy()
-            # Ανιχνεύουμε long-format: απαιτούνται (year, floor, month, day)
             cols_lower = {c.lower().strip(): c for c in df.columns}
             required_long = {"year", "floor", "month", "day"}
             is_long = required_long.issubset(set(cols_lower.keys()))
 
             new_grid = empty_grid()
             if is_long:
-                # Κανονικοποίηση ονομάτων
-                df = df.rename(columns={v: k for k, v in cols_lower.items()})  # now lowercase
+                df = df.rename(columns={v: k for k, v in cols_lower.items()})
                 for _, r in df.iterrows():
                     try:
                         year = int(r.get("year"))
@@ -495,7 +491,6 @@ with st.sidebar:
                         day = int(r.get("day")) if not pd.isna(r.get("day")) else None
                         if pd.isna(year) or floor not in FLOORS_DISPLAY or day not in DAYS:
                             continue
-                        # Υποστήριξη μηνών σε GR ή EN
                         if month_raw in MONTHS:
                             month_gr = month_raw
                             month_en = MONTH_EN[month_gr]
@@ -506,11 +501,9 @@ with st.sidebar:
                                 continue
                             month_en = month_en_u
                         col = f"{month_gr} {floor}"
-                        # Τιμή (price) είναι υποχρεωτική για το token
                         if "price" in df.columns and not pd.isna(r.get("price")):
                             price_val = float(r.get("price"))
                         else:
-                            # αν δεν υπάρχει τιμή, αγνόησε την εγγραφή
                             continue
                         prev = str(new_grid.at[day, col] or "").strip()
                         token = f"{price_val:g}:{int(year)};{month_en}"
@@ -518,7 +511,6 @@ with st.sidebar:
                     except Exception:
                         continue
             else:
-                # Grid-format: μπορεί να έχει στήλη Ημέρα, και στήλες τύπου "Μάιος Ισόγειο" κ.λπ.
                 if "Ημέρα" in df.columns:
                     df = df.set_index("Ημέρα")
                 keep_cols = [c for c in df.columns if c in GRID_COLUMNS]
@@ -526,7 +518,6 @@ with st.sidebar:
                     st.error("Το Excel δεν αναγνωρίστηκε (ούτε long-format ούτε grid-format με σωστές στήλες).")
                     new_grid = None
                 else:
-                    # Αντιγραφή στα γνωστά columns, με μετατροπή απλών αριθμών σε tokens για το τρέχον sidebar_year
                     tmp = empty_grid()
                     tmp.loc[tmp.index, keep_cols] = df[keep_cols].astype("string").reindex(index=DAYS).fillna("")
                     for d in DAYS:
@@ -539,50 +530,49 @@ with st.sidebar:
                             parts = [p.strip() for p in raw.split(",") if p and p.strip()]
                             toks = []
                             for p in parts:
-                                # Αν είναι σκέτος αριθμός, κάν’ τον token για το έτος του sidebar
                                 if re.match(r"^\d+(?:\.\d+)?$", p):
-                                    toks.append(f"{float(p):g}:{int(sidebar_year)};{month_en}")
+                                    toks.append(f"{float(p):g}:{int(import_year)};{month_en}")
                                 else:
-                                    # Κράτα μόνο έγκυρα tokens (price:YYYY;MONTH)
                                     m = TOKEN_DEV_RE.match(p)
-                                    if m:
-                                        # προαιρετικά, αν το token αφορά άλλο μήνα, το αγνοούμε (κρατάμε μόνο σωστό month)
-                                        if m.group(3).upper() == month_en:
-                                            toks.append(f"{float(m.group(1)):g}:{int(m.group(2))};{m.group(3).upper()}")
+                                    if m and m.group(3).upper() == month_en:
+                                        toks.append(f"{float(m.group(1)):g}:{int(m.group(2))};{m.group(3).upper()}")
                             new_grid.at[d, col] = ",".join(toks)
 
             if new_grid is not None:
-                base = st.session_state[session_key].copy()
+                base = st.session_state[session_key_import].copy()
                 if merge_mode.startswith("Αντικατάσταση"):
-                    st.session_state[session_key] = _norm_df(new_grid)   # for Αντικατάσταση
+                    st.session_state[session_key_import] = _norm_df(new_grid)
                 else:
-                    # Συγχώνευση: κρατάμε τα παλιά εκτός αν το νέο έχει μη κενό
                     merged = base.copy().astype("string")
                     for col in GRID_COLUMNS:
                         left = merged[col].fillna("")
                         right = new_grid[col].fillna("")
                         merged[col] = np.where(right.astype(str).str.strip() != "", right, left)
-                    st.session_state[session_key] = _norm_df(merged)     # for Συγχώνευση
-                st.success("Ο πίνακας ενημερώθηκε από το Excel στην τρέχουσα χρονιά του Sidebar. Μην ξεχάσεις να πατήσεις Αποθήκευση.")
+                    st.session_state[session_key_import] = _norm_df(merged)
+                st.success(f"Ο πίνακας ενημερώθηκε από το Excel στο έτος {import_year}. Μην ξεχάσεις να πατήσεις Αποθήκευση.")
         except Exception as e:
             st.error(f"Αποτυχία ανάγνωσης Excel: {e}")
 
     st.markdown("—")
-    st.subheader("Καθαρισμός (στο επιλεγμένο έτος)")
+    st.subheader("Καθαρισμός")
+    clear_year = st.selectbox("Έτος", [2022, 2023, 2024, 2025], index=2, key="clear_year_select")
+    session_key_clear = f"grid_df::{clear_year}"
+    if session_key_clear not in st.session_state:
+        st.session_state[session_key_clear] = load_grid_df_for_year(int(clear_year))
+
     month_to_clear = st.selectbox("Μήνας", MONTHS, key="clear_month_select")
-    if st.button("🧹 Καθάρισε τον μήνα στο έτος", key="btn_clear_month_year_only"):
-        base = st.session_state[session_key].copy()
+    if st.button("🧹 Καθάρισε τον μήνα", key="btn_clear_month_year_only"):
+        base = st.session_state[session_key_clear].copy()
         for f in FLOORS_DISPLAY:
             col = f"{month_to_clear} {f}"
             if col in base.columns:
                 base.loc[:, col] = ""
-        st.session_state[session_key] = _norm_df(base)
-        st.success(f"Καθαρίστηκε ο {month_to_clear} στο {sidebar_year}. Πάτα Αποθήκευση στην κεντρική φόρμα.")
+        st.session_state[session_key_clear] = _norm_df(base)
+        st.success(f"Καθαρίστηκε ο {month_to_clear} στο {clear_year}. Πάτα Αποθήκευση στην κεντρική φόρμα.")
 
     if st.button("🧨 Καθάρισε ΟΛΟΥΣ τους μήνες στο έτος", key="btn_clear_all_months_year_only"):
-        # clear only columns of this year in UI (the files are per-year so this is safe)
-        st.session_state[session_key] = empty_grid()
-        st.warning(f"Καθαρίστηκαν όλοι οι μήνες στο {sidebar_year}. Πάτα Αποθήκευση στην κεντρική φόρμα.")
+        st.session_state[session_key_clear] = empty_grid()
+        st.warning(f"Καθαρίστηκαν όλοι οι μήνες στο {clear_year}. Πάτα Αποθήκευση στην κεντρική φόρμα.")
 
     st.markdown("—")
     st.subheader("Μαζικός καθαρισμός (ΟΛΑ τα έτη)")
