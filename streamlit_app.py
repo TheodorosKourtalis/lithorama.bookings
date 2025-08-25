@@ -624,7 +624,24 @@ with st.sidebar:
 
             if updated_years:
                 updated_years = sorted(set(updated_years))
-                st.success("Ενημερώθηκαν πίνακες για έτη: " + ", ".join(str(x) for x in updated_years) + ". Μην ξεχάσεις να πατήσεις Αποθήκευση (ανά έτος).")
+                errors = []
+                for y in updated_years:
+                    key_y = f"grid_df::{int(y)}"
+                    ok, err = save_grid_df_for_year(st.session_state[key_y], int(y))
+                    if not ok and err:
+                        errors.append(f"{y}: {err}")
+                if errors:
+                    st.error("Ενημερώθηκαν αλλά **ΟΧΙ όλες** αποθηκεύτηκαν λόγω σφαλμάτων στα έτη: " + "; ".join(errors))
+                else:
+                    st.success("Ενημερώθηκαν **και αποθηκεύτηκαν** πίνακες για έτη: " + ", ".join(str(x) for x in updated_years) + ". Το ενιαίο bookings.xlsx ανανεώθηκε.")
+                    if BOOKINGS_XLSX.exists():
+                        st.download_button(
+                            "⬇️ Λήψη bookings.xlsx",
+                            data=open(BOOKINGS_XLSX, "rb").read(),
+                            file_name="bookings.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_bookings_after_import",
+                        )
             else:
                 st.warning("Δεν ανιχνεύθηκαν έγκυρα δεδομένα για ενημέρωση.")
         except Exception as e:
@@ -807,7 +824,14 @@ with main_tabs[1]:
                 year_range = (y_min, y_max)
                 st.caption(f"Διαθέσιμο μόνο έτος: {y_min}")
             else:
-                year_range = st.slider("Έτη", min_value=y_min, max_value=y_max, value=(y_min, y_max))
+                year_range = st.slider(
+                    "Έτη (εύρος)",
+                    min_value=int(y_min),
+                    max_value=int(y_max),
+                    value=(int(y_min), int(y_max)),
+                    step=1,
+                    key="stats_year_range",
+                )
         else:
             y_min, y_max = 0, 0
             year_range = (y_min, y_max)
