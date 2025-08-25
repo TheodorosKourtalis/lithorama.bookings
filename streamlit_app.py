@@ -91,6 +91,7 @@ GRID_COLUMNS = [f"{m} {f}" for m in MONTHS for f in FLOORS_DISPLAY]
 
 DATA_DIR = Path(".")
 BOOKINGS_XLSX = DATA_DIR / "bookings.xlsx"
+MONTHLY_EXPENSE_XLSX = DATA_DIR / "monthly_expense.xlsx"
 
 def load_bookings_df() -> pd.DataFrame:
     """Load combined bookings for statistics from bookings.xlsx only."""
@@ -143,7 +144,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 st.markdown(f"<h1 class='title'>{APP_TITLE}</h1>", unsafe_allow_html=True)
 st.markdown(
-    "<p class='small-muted'>Πληκτρολόγησε μόνο την <code>τιμή</code>. Η εφαρμογή τη γράφει ως token <code>τιμή:YYYY;MONTH</code> (π.χ. <code>80:2023;AUGUST</code>). Κάθε κελί δέχεται πολλά tokens χωρισμένα με κόμμα, αλλά το κλειδί <code>YYYY;MONTH</code> είναι μοναδικό: η νέα τιμή αντικαθιστά την παλιά για το ίδιο έτος/μήνα.</p>",
+    "<p class='small-muted'>Πληκτρολόγησε μόνο την <code>τιμή</code>. Η εφαρμογή τη γράφει ως token <code>τιμή:YYYY;MONTH</code> για έσοδα και <code>τιμή:YYYY;MONTH;EX</code> για έξοδα (π.χ. <code>80:2023;AUGUST</code>, <code>50:2024;MAY;EX</code>). Κάθε κελί δέχεται πολλά tokens χωρισμένα με κόμμα, αλλά το κλειδί <code>YYYY;MONTH</code> είναι μοναδικό: η νέα τιμή αντικαθιστά την παλιά για το ίδιο έτος/μήνα.</p>",
     unsafe_allow_html=True,
 )
 
@@ -291,7 +292,7 @@ def empty_grid() -> pd.DataFrame:
 
 # --- Helpers for dev token parsing/serialization (for per-year/month files) ---
 def parse_dev_tokens(cell: str) -> list[dict]:
-    """Parse tokens of form 100:2024;APRIL into dicts."""
+    """Parse tokens of form 100:2024;APRIL[;EX] into dicts with kind (REV/EX)."""
     if not cell or not isinstance(cell, str):
         return []
     toks = []
@@ -299,15 +300,19 @@ def parse_dev_tokens(cell: str) -> list[dict]:
         t = t.strip()
         m = TOKEN_DEV_RE.match(t)
         if m:
-            toks.append({
-                "price": float(m.group(1)),
-                "year": int(m.group(2)),
-                "month_en": m.group(3).upper(),
-            })
+            price = float(m.group(1))
+            year = int(m.group(2))
+            month_en = m.group(3).upper()
+            kind = "EX" if (m.group(4) and m.group(4).upper() == "EX") else "REV"
+            toks.append({"price": price, "year": year, "month_en": month_en, "kind": kind})
     return toks
 
 def serialize_dev(toks: list[dict]) -> str:
-    return ",".join(f"{float(e['price']):g}:{int(e['year'])};{e['month_en'].upper()}" for e in toks if "price" in e and "year" in e and "month_en" in e)
+    return ",".join(
+        f"{float(e['price']):g}:{int(e['year'])};{e['month_en'].upper()}"
+        + (";EX" if str(e.get('kind','REV')).upper()=="EX" else "")
+        for e in toks if "price" in e and "year" in e and "month_en" in e
+    )
 
 def dedupe_by_key(toks: list[dict]) -> list[dict]:
     # Remove duplicates by (year, month_en): keep only the last token for each (year, month_en)
@@ -323,6 +328,49 @@ def display_price_for_year_month(cell_text: str, year: int, month_en: str) -> st
     for e in toks:
         if int(e["year"]) == int(year) and e["month_en"].upper() == month_en.upper():
             return f"{e['price']:g}"
+    return ""
+# ===================== Helpers for Monthly Expenses =====================
+def load_monthly_expense_df(year: int) -> pd.DataFrame:
+    df = pd.DataFrame("", index=MONTHS, columns=FLOORS_DISPLAY, dtype="string")
+    df.index.name = "Μήνας"
+    if MONTHLY_EXPENSE_XLSX.exists():
+        try:
+            xls = pd.read_excel(MONTHLY_EXPENSE_XLSX, sheet_name=None)
+            sheet = str(int(year))
+            if sheet in xls:
+                cur = xls[sheet]
+                if "Μήνας" in cur.columns:
+                    cur = cur.set_index("Μήνας")
+                for f in FLOORS_DISPLAY:
+                    if f in cur.columns:
+                        df.loc[MONTHS, f] = cur[f].astype("string").reindex(MONTHS).fillna("")
+        except Exception:
+            pass
+    return df
+
+def save_monthly_expense_df(year: int, df: pd.DataFrame) -> tuple[bool, str | None]:
+    try:
+        book = {}
+        if MONTHLY_EXPENSE_XLSX.exists():
+            try:
+                book = pd.read_excel(MONTHLY_EXPENSE_XLSX, sheet_name=None)
+            except Exception:
+                book = {}
+        out = df.copy().reset_index()
+        out.index.name = None
+        book[str(int(year))] = out
+        with pd.ExcelWriter(MONTHLY_EXPENSE_XLSX, engine="openpyxl") as xl:
+            for name, frame in book.items():
+                frame.to_excel(xl, sheet_name=name, index=False)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+def display_expense_for_year_month(cell_text: str, year: int, month_en: str) -> str:
+    toks = parse_dev_tokens(str(cell_text or ""))
+    for e in toks:
+        if int(e.get("year", 0)) == int(year) and str(e.get("month_en","")).upper()==month_en.upper() and str(e.get("kind","")).upper()=="EX":
+            return f"{float(e['price']):g}"
     return ""
 
 def load_grid_df_for_year(year: int) -> pd.DataFrame:
@@ -693,7 +741,7 @@ with st.sidebar:
             st.success("Καθαρίστηκαν ΟΛΟΙ οι μήνες σε ΟΛΑ τα έτη (2022–2025). Το ενιαίο bookings αρχείο ανανεώθηκε.")
 
 # ---------- Πίνακας (HTML‑styled) με φόρμα αποθήκευσης ----------
-main_tabs = st.tabs(["Καταχώρηση", "Στατιστικά"])  # δύο σελίδες: εισαγωγή & στατιστικά
+main_tabs = st.tabs(["Καταχώρηση Εσόδων", "Καταχώρηση Εξόδων", "Στατιστικά"])
 
 with main_tabs[0]:
     # Reload grid whenever the selected year changes
@@ -790,8 +838,76 @@ with main_tabs[0]:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
-# ---------- Στατιστικά (δεύτερη σελίδα) ----------
 with main_tabs[1]:
+    # Monthly Expenses Entry (per month & floor)
+    exp_year = st.radio(
+        "Έτος εξόδων",
+        [2022, 2023, 2024, 2025],
+        index=[2022, 2023, 2024, 2025].index(int(st.session_state.get("selected_year", 2024))),
+        horizontal=True,
+        key="selected_expense_year",
+    )
+    exp_year = int(exp_year)
+    exp_df = load_monthly_expense_df(exp_year)
+
+    st.markdown(
+        """
+    <div class="card">
+      <h3>💳 Καταχώρηση Εξόδων (Μηνιαία)</h3>
+      <div class="small-muted">Για κάθε μήνα & όροφο καταχώρησε μία τιμή. Αποθηκεύεται ως <code>τιμή:YYYY;MONTH;EX</code>.</div>
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
+
+    with st.form("expense_form", clear_on_submit=False):
+        tabs_exp = st.tabs(MONTHS)
+        new_exp_values = {}
+        for i, m in enumerate(MONTHS):
+            with tabs_exp[i]:
+                st.markdown(f"### {m}")
+                header_cols = st.columns([1, 1, 1], gap="small")
+                header_cols[0].markdown("<div class='col-header'>Ισόγειο</div>", unsafe_allow_html=True)
+                header_cols[1].markdown("<div class='col-header'>Α</div>", unsafe_allow_html=True)
+                header_cols[2].markdown("<div class='col-header'>Β</div>", unsafe_allow_html=True)
+
+                row = st.columns([1, 1, 1], gap="small")
+                for j, f in enumerate(FLOORS_DISPLAY):
+                    month_en = MONTH_EN[m]
+                    raw_initial = str(exp_df.at[m, f] if (m in exp_df.index and f in exp_df.columns) else "")
+                    placeholder_val = display_expense_for_year_month(raw_initial, int(exp_year), month_en)
+                    key = f"expense_cell::{m}::{f}::{exp_year}"
+                    val = row[j].text_input(f"{m} {f}", value="", key=key, placeholder=str(placeholder_val or ""))
+                    new_exp_values[(m, f)] = val
+        submitted_exp = st.form_submit_button("💾 Αποθήκευση Εξόδων", type="primary")
+
+    if submitted_exp:
+        out_df = load_monthly_expense_df(exp_year)
+        for (month_gr, floor), val in new_exp_values.items():
+            val_s = str(val or "").strip()
+            if val_s == "":
+                continue
+            mnum = re.search(r"\d+(?:\.\d+)?", val_s)
+            if not mnum:
+                continue
+            price_val = float(mnum.group(0))
+            month_en = MONTH_EN[month_gr]
+            token = f"{price_val:g}:{int(exp_year)};{month_en};EX"
+            out_df.at[month_gr, floor] = token
+        ok_exp, err_exp = save_monthly_expense_df(exp_year, out_df)
+        if ok_exp:
+            st.success("Αποθηκεύτηκαν τα μηνιαία έξοδα για το έτος.")
+            if MONTHLY_EXPENSE_XLSX.exists():
+                st.download_button(
+                    "⬇️ Λήψη monthly_expense.xlsx",
+                    data=open(MONTHLY_EXPENSE_XLSX, "rb").read(),
+                    file_name="monthly_expense.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+        else:
+            st.error(f"Σφάλμα αποθήκευσης εξόδων: {err_exp}")
+# ---------- Στατιστικά (δεύτερη σελίδα) ----------
+with main_tabs[2]:
     st.markdown(
         """
     <div class="card">
