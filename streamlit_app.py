@@ -93,6 +93,88 @@ DATA_DIR = Path(".")
 BOOKINGS_XLSX = DATA_DIR / "bookings.xlsx"
 MONTHLY_EXPENSE_XLSX = DATA_DIR / "monthly_expense.xlsx"
 
+# ---- Combined writer: write both bookings & expenses into bookings.xlsx ----
+def build_expenses_long() -> pd.DataFrame:
+    """Scan monthly_expense.xlsx (all sheets by year) and return long-format expenses.
+    Columns: year, floor, month (GR), price (float), price_token (str).
+    Accept either bare numbers or tokens; normalize to token 'price:YYYY;MONTH;EX'.
+    """
+    cols = ["year", "floor", "month", "price", "price_token"]
+    if not MONTHLY_EXPENSE_XLSX.exists():
+        return pd.DataFrame(columns=cols)
+    try:
+        xls = pd.read_excel(MONTHLY_EXPENSE_XLSX, sheet_name=None)
+    except Exception:
+        return pd.DataFrame(columns=cols)
+    recs = []
+    for sheet_name, df in xls.items():
+        try:
+            y = int(sheet_name)
+        except Exception:
+            # skip non-year sheets
+            continue
+        cur = df.copy()
+        if "Μήνας" in cur.columns:
+            cur = cur.set_index("Μήνας")
+        for m_gr in MONTHS:
+            for f in FLOORS_DISPLAY:
+                val = str(cur.at[m_gr, f] if (m_gr in cur.index and f in cur.columns) else "").strip()
+                if not val:
+                    continue
+                # Normalize: if bare number, convert to token; if token, keep if EX
+                month_en = MONTH_EN[m_gr]
+                mnum = re.match(r"^\d+(?:\.\d+)?$", val)
+                token = None
+                price_val = None
+                if mnum:
+                    price_val = float(mnum.group(0))
+                    token = f"{price_val:g}:{int(y)};{month_en};EX"
+                else:
+                    mm = TOKEN_DEV_RE.match(val)
+                    if mm:
+                        price_val = float(mm.group(1))
+                        y2 = int(mm.group(2))
+                        men = mm.group(3).upper()
+                        kind = (mm.group(4) or "").upper()
+                        if kind == "EX":
+                            # Only accept if the month matches sheet row
+                            if men != month_en:
+                                continue
+                            token = f"{price_val:g}:{y2};{men};EX"
+                            y = y2
+                        else:
+                            continue  # skip revenue tokens
+                if token is None:
+                    continue
+                recs.append({
+                    "year": int(y),
+                    "floor": f,
+                    "month": m_gr,
+                    "price": float(price_val),
+                    "price_token": token,
+                })
+    if not recs:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(recs, columns=cols).sort_values(["year", "month", "floor"]).reset_index(drop=True)
+
+
+def write_combined_excel(bookings_df: pd.DataFrame) -> None:
+    """Write combined Excel (bookings + expenses) to BOOKINGS_XLSX.
+    - Sheet 'bookings': provided bookings_df (may be empty but with proper columns).
+    - Sheet 'expenses': long-format built from monthly_expense.xlsx (year, floor, month, price, price_token).
+    """
+    try:
+        expenses_long = build_expenses_long()
+        with pd.ExcelWriter(BOOKINGS_XLSX, engine="openpyxl") as xl:
+            (bookings_df if bookings_df is not None else pd.DataFrame(columns=["year","floor","month","day","price"])) \
+                .to_excel(xl, sheet_name="bookings", index=False)
+            # Save expenses in the combined file; both numeric price and token are useful.
+            (expenses_long if not expenses_long.empty else pd.DataFrame(columns=["year","floor","month","price","price_token"])) \
+                .to_excel(xl, sheet_name="expenses", index=False)
+    except Exception:
+        # Fail silently to avoid crashing the app when only one part is available
+        pass
+
 def load_bookings_df() -> pd.DataFrame:
     """Load combined bookings for statistics from bookings.xlsx only."""
     cols = ["year", "floor", "month", "day", "price"]
@@ -492,8 +574,8 @@ def save_grid_df_for_year(grid: pd.DataFrame, year: int) -> tuple[bool, str | No
                             "price": float(e["price"]),
                         })
         bookings = pd.DataFrame(recs, columns=["year", "floor", "month", "day", "price"]).sort_values(["year", "month", "floor", "day"]) if recs else pd.DataFrame(columns=["year", "floor", "month", "day", "price"]) 
-        with pd.ExcelWriter(BOOKINGS_XLSX, engine="openpyxl") as xl:
-            bookings.to_excel(xl, sheet_name="bookings", index=False)
+        # Write combined (bookings + expenses) to bookings.xlsx
+        write_combined_excel(bookings)
         return True, None
     except Exception as e:
         return False, str(e)
@@ -877,7 +959,7 @@ with main_tabs[1]:
                     raw_initial = str(exp_df.at[m, f] if (m in exp_df.index and f in exp_df.columns) else "")
                     placeholder_val = display_expense_for_year_month(raw_initial, int(exp_year), month_en)
                     key = f"expense_cell::{m}::{f}::{exp_year}"
-                    val = row[j].text_input(f"{m} {f}", value="", key=key, placeholder=str(placeholder_val or ""))
+                    val = row[j].text_input(f"{m} {f}", value="", key=key, placeholder=str(placeholder_val or ""), label_visibility="collapsed")
                     new_exp_values[(m, f)] = val
         submitted_exp = st.form_submit_button("💾 Αποθήκευση Εξόδων", type="primary")
 
@@ -897,13 +979,30 @@ with main_tabs[1]:
         ok_exp, err_exp = save_monthly_expense_df(exp_year, out_df)
         if ok_exp:
             st.success("Αποθηκεύτηκαν τα μηνιαία έξοδα για το έτος.")
-            if MONTHLY_EXPENSE_XLSX.exists():
-                st.download_button(
-                    "⬇️ Λήψη monthly_expense.xlsx",
-                    data=open(MONTHLY_EXPENSE_XLSX, "rb").read(),
-                    file_name="monthly_expense.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+            # Refresh the combined workbook so it includes an up-to-date 'expenses' sheet
+            try:
+                # Pass current bookings (if any) to avoid dropping that sheet
+                existing_bookings = load_bookings_df()
+                write_combined_excel(existing_bookings)
+            except Exception:
+                pass
+            c1, c2 = st.columns(2)
+            with c1:
+                if MONTHLY_EXPENSE_XLSX.exists():
+                    st.download_button(
+                        "⬇️ Λήψη monthly_expense.xlsx",
+                        data=open(MONTHLY_EXPENSE_XLSX, "rb").read(),
+                        file_name="monthly_expense.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+            with c2:
+                if BOOKINGS_XLSX.exists():
+                    st.download_button(
+                        "⬇️ Λήψη bookings.xlsx (με φύλλο expenses)",
+                        data=open(BOOKINGS_XLSX, "rb").read(),
+                        file_name="bookings.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
         else:
             st.error(f"Σφάλμα αποθήκευσης εξόδων: {err_exp}")
 # ---------- Στατιστικά (δεύτερη σελίδα) ----------
@@ -1648,3 +1747,122 @@ with main_tabs[2]:
                 st.info("Δεν βρέθηκαν ανωμαλίες.")
         else:
             st.info("Δεν υπάρχουν τιμές για ανίχνευση ανωμαλιών.")
+
+    st.markdown("—")
+    st.subheader("Εισαγωγή Εξόδων από Excel")
+    up_exp = st.file_uploader(
+        "Επίλεξε Excel εξόδων",
+        type=["xlsx", "xls"],
+        key="uploader_expenses",
+        help=(
+            "Δέχεται είτε long-format (στήλες: year, floor, month, price) στο πρώτο φύλλο, "
+            "είτε grid-format με στήλη 'Μήνας' και στήλες 'Ισόγειο', 'Α', 'Β'."
+        ),
+    )
+    import_exp_target_year = st.selectbox("Έτος (fallback για bare numbers)", [2022, 2023, 2024, 2025], index=2, key="imp_exp_year")
+    if up_exp is not None and st.button("↪︎ Ενημέρωση εξόδων από Excel"):
+        try:
+            src = pd.read_excel(up_exp, sheet_name=0)
+            df = src.copy()
+            cols_lower = {c.lower().strip(): c for c in df.columns}
+            required_long = {"year", "floor", "month", "price"}
+            is_long = required_long.issubset(set(cols_lower.keys()))
+            year_to_use = int(import_exp_target_year)
+            exp_df_pending = load_monthly_expense_df(year_to_use)
+            if is_long:
+                df = df.rename(columns={v: k for k, v in cols_lower.items()})
+                # Normalize and write into monthly_expense.xlsx per target year(s)
+                # We'll batch by year and update tokens in the per-year sheet
+                books = {}
+                if MONTHLY_EXPENSE_XLSX.exists():
+                    try:
+                        books = pd.read_excel(MONTHLY_EXPENSE_XLSX, sheet_name=None)
+                    except Exception:
+                        books = {}
+                years_seen = set()
+                for _, r in df.iterrows():
+                    try:
+                        y = int(r.get("year"))
+                        f = str(r.get("floor")).strip()
+                        m_raw = str(r.get("month")).strip()
+                        p = r.get("price")
+                        if f not in FLOORS_DISPLAY or pd.isna(p):
+                            continue
+                        if m_raw in MONTHS:
+                            m_gr = m_raw
+                            m_en = MONTH_EN[m_gr]
+                        else:
+                            m_en = m_raw.upper()
+                            m_gr = MONTH_GR_FROM_EN.get(m_en)
+                            if not m_gr:
+                                continue
+                        token = f"{float(p):g}:{int(y)};{m_en};EX"
+                        years_seen.add(y)
+                        # Load or create the per-year sheet
+                        sh_name = str(int(y))
+                        base = books.get(sh_name)
+                        if base is None:
+                            base = pd.DataFrame("", index=MONTHS, columns=FLOORS_DISPLAY)
+                            base.index.name = "Μήνας"
+                        if "Μήνας" in base.columns:
+                            base = base.set_index("Μήνας")
+                        base.loc[m_gr, f] = token
+                        books[sh_name] = base.reset_index()
+                    except Exception:
+                        continue
+                # Write back all year sheets
+                with pd.ExcelWriter(MONTHLY_EXPENSE_XLSX, engine="openpyxl") as xl:
+                    for name, frame in books.items():
+                        frame.to_excel(xl, sheet_name=name, index=False)
+                # Refresh combined
+                try:
+                    write_combined_excel(load_bookings_df())
+                except Exception:
+                    pass
+                st.success("Ενημερώθηκαν/αποθηκεύτηκαν έξοδα από long-format.")
+            else:
+                # Grid-format: map direct cells to tokens for the selected fallback year when bare numbers
+                if "Μήνας" in df.columns:
+                    df = df.set_index("Μήνας")
+                books = {}
+                if MONTHLY_EXPENSE_XLSX.exists():
+                    try:
+                        books = pd.read_excel(MONTHLY_EXPENSE_XLSX, sheet_name=None)
+                    except Exception:
+                        books = {}
+                sh_name = str(year_to_use)
+                base = pd.DataFrame("", index=MONTHS, columns=FLOORS_DISPLAY)
+                base.index.name = "Μήνας"
+                if sh_name in books:
+                    cur = books[sh_name]
+                    if "Μήνας" in cur.columns:
+                        cur = cur.set_index("Μήνας")
+                    for f in FLOORS_DISPLAY:
+                        if f in cur.columns:
+                            base.loc[MONTHS, f] = cur[f].astype("string").reindex(MONTHS).fillna("")
+                # Merge incoming grid
+                for m_gr in MONTHS:
+                    for f in FLOORS_DISPLAY:
+                        raw = str(df.at[m_gr, f] if (m_gr in df.index and f in df.columns) else "").strip()
+                        if not raw:
+                            continue
+                        if re.match(r"^\d+(?:\.\d+)?$", raw):
+                            token = f"{float(raw):g}:{int(year_to_use)};{MONTH_EN[m_gr]};EX"
+                        else:
+                            mm = TOKEN_DEV_RE.match(raw)
+                            if mm and (mm.group(4) or "").upper() == "EX":
+                                token = f"{float(mm.group(1)):g}:{int(mm.group(2))};{mm.group(3).upper()};EX"
+                            else:
+                                continue
+                        base.loc[m_gr, f] = token
+                books[sh_name] = base.reset_index()
+                with pd.ExcelWriter(MONTHLY_EXPENSE_XLSX, engine="openpyxl") as xl:
+                    for name, frame in books.items():
+                        frame.to_excel(xl, sheet_name=name, index=False)
+                try:
+                    write_combined_excel(load_bookings_df())
+                except Exception:
+                    pass
+                st.success("Ενημερώθηκαν/αποθηκεύτηκαν έξοδα από grid-format.")
+        except Exception as e:
+            st.error(f"Αποτυχία εισαγωγής εξόδων: {e}")
