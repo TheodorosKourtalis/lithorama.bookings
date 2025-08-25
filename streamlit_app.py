@@ -24,7 +24,14 @@ import pandas as pd
 import streamlit as st
 import openpyxl
 
+# Defensive define in case of partial reruns
+try:
+    DAYS
+except NameError:
+    DAYS = list(range(1, 32))
+
 APP_TITLE = "📅 Κρατήσεις Διαμερισμάτων (Ιαν–Δεκ)"
+
 
 
 MONTHS = [
@@ -41,6 +48,9 @@ MONTHS = [
     "Νοέμβριος",
     "Δεκέμβριος",
 ]
+
+# Ημέρες (1–31)
+DAYS = list(range(1, 32))  # 1–31
 
 
 # Μήνες EN για αρχεία (όνομα αρχείου)
