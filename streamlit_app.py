@@ -469,6 +469,11 @@ with st.sidebar:
 
     st.subheader("Εισαγωγή από Excel")
     import_year = st.selectbox("Έτος (για εισαγωγή)", [2022, 2023, 2024, 2025], index=2, key="import_year_select")
+    import_multi_years = st.checkbox(
+        "Ανίχνευση & εφαρμογή για ΟΛΑ τα έτη/μήνες (αν υπάρχουν στο αρχείο)",
+        value=True,
+        help="Αν το αρχείο περιέχει δεδομένα για πολλά έτη/μήνες, θα ενημερωθούν αυτόματα οι αντίστοιχοι πίνακες. Αν όχι, χρησιμοποιείται το έτος εισαγωγής."
+    )
     session_key_import = f"grid_df::{import_year}"
     if session_key_import not in st.session_state:
         st.session_state[session_key_import] = load_grid_df_for_year(int(import_year))
@@ -481,6 +486,7 @@ with st.sidebar:
             "είτε grid-format με στήλες τύπου 'Μάιος Ισόγειο', 'Μάιος Α', 'Μάιος Β' και προαιρετική στήλη 'Ημέρα'."
         ),
     )
+    st.caption("Μπορείς να ανεβάσεις πλήρη βάση (όλα τα έτη/μήνες). Το σύστημα θα εφαρμόσει μόνο ό,τι ταιριάζει σε κάθε έτος/μήνα.")
     merge_mode = st.radio(
         "Τρόπος ενημέρωσης",
         ["Αντικατάσταση όλων", "Συγχώνευση (μόνο μη κενά)"],
@@ -490,6 +496,12 @@ with st.sidebar:
             "Συγχώνευση: μόνο τα μη κενά του αρχείου γράφουν πάνω στα υπάρχοντα."
         ),
     )
+
+    def _ensure_session_grid(year: int) -> None:
+        key = f"grid_df::{int(year)}"
+        if key not in st.session_state:
+            st.session_state[key] = load_grid_df_for_year(int(year))
+
     if up is not None and st.button("↪︎ Ενημέρωση πίνακα από Excel"):
         try:
             src = pd.read_excel(up, sheet_name=0)
@@ -498,17 +510,27 @@ with st.sidebar:
             required_long = {"year", "floor", "month", "day"}
             is_long = required_long.issubset(set(cols_lower.keys()))
 
-            new_grid = empty_grid()
+            pending: dict[int, pd.DataFrame] = {}
+            years_found: set[int] = set()
+            def _get_pending_grid(y: int) -> pd.DataFrame:
+                if y not in pending:
+                    pending[y] = empty_grid()
+                return pending[y]
+
             if is_long:
                 df = df.rename(columns={v: k for k, v in cols_lower.items()})
                 for _, r in df.iterrows():
                     try:
-                        year = int(r.get("year"))
+                        year_val = r.get("year")
+                        if pd.isna(year_val):
+                            continue
+                        year = int(year_val)
                         floor = str(r.get("floor")).strip()
                         month_raw = str(r.get("month")).strip()
                         day = int(r.get("day")) if not pd.isna(r.get("day")) else None
-                        if pd.isna(year) or floor not in FLOORS_DISPLAY or day not in DAYS:
+                        if floor not in FLOORS_DISPLAY or day not in DAYS:
                             continue
+                        # Resolve month (accept GR or EN)
                         if month_raw in MONTHS:
                             month_gr = month_raw
                             month_en = MONTH_EN[month_gr]
@@ -518,14 +540,18 @@ with st.sidebar:
                             if not month_gr:
                                 continue
                             month_en = month_en_u
-                        col = f"{month_gr} {floor}"
+                        # Price
                         if "price" in df.columns and not pd.isna(r.get("price")):
                             price_val = float(r.get("price"))
                         else:
                             continue
-                        prev = str(new_grid.at[day, col] or "").strip()
+                        # Accumulate into pending grid for this year
+                        years_found.add(year)
+                        grid_y = _get_pending_grid(year)
+                        col = f"{month_gr} {floor}"
+                        prev = str(grid_y.at[day, col] or "").strip()
                         token = f"{price_val:g}:{int(year)};{month_en}"
-                        new_grid.at[day, col] = (prev + ("," if prev else "") + token)
+                        grid_y.at[day, col] = (prev + ("," if prev else "") + token)
                     except Exception:
                         continue
             else:
@@ -534,7 +560,6 @@ with st.sidebar:
                 keep_cols = [c for c in df.columns if c in GRID_COLUMNS]
                 if not keep_cols:
                     st.error("Το Excel δεν αναγνωρίστηκε (ούτε long-format ούτε grid-format με σωστές στήλες).")
-                    new_grid = None
                 else:
                     tmp = empty_grid()
                     tmp.loc[tmp.index, keep_cols] = df[keep_cols].astype("string").reindex(index=DAYS).fillna("")
@@ -546,28 +571,62 @@ with st.sidebar:
                             month_gr, _floor = split_month_floor(col)
                             month_en = MONTH_EN[month_gr]
                             parts = [p.strip() for p in raw.split(",") if p and p.strip()]
-                            toks = []
                             for p in parts:
-                                if re.match(r"^\d+(?:\.\d+)?$", p):
-                                    toks.append(f"{float(p):g}:{int(import_year)};{month_en}")
+                                m_full = TOKEN_DEV_RE.match(p)
+                                if m_full:
+                                    price_v = float(m_full.group(1))
+                                    yr_v = int(m_full.group(2))
+                                    mon_v = m_full.group(3).upper()
+                                    # Only accept tokens whose MONTH matches the column's month
+                                    if mon_v != month_en:
+                                        continue
+                                    years_found.add(yr_v)
+                                    grid_y = _get_pending_grid(yr_v)
+                                    colname = f"{month_gr} {_floor}"
+                                    prev = str(grid_y.at[d, colname] or "").strip()
+                                    token = f"{price_v:g}:{int(yr_v)};{month_en}"
+                                    grid_y.at[d, colname] = (prev + ("," if prev else "") + token)
                                 else:
-                                    m = TOKEN_DEV_RE.match(p)
-                                    if m and m.group(3).upper() == month_en:
-                                        toks.append(f"{float(m.group(1)):g}:{int(m.group(2))};{m.group(3).upper()}")
-                            new_grid.at[d, col] = ",".join(toks)
+                                    # Bare number: fall back to import_year
+                                    if re.match(r"^\d+(?:\.\d+)?$", p):
+                                        yr_v = int(import_year)
+                                        years_found.add(yr_v)
+                                        grid_y = _get_pending_grid(yr_v)
+                                        colname = f"{month_gr} {_floor}"
+                                        prev = str(grid_y.at[d, colname] or "").strip()
+                                        token = f"{float(p):g}:{int(yr_v)};{month_en}"
+                                        grid_y.at[d, colname] = (prev + ("," if prev else "") + token)
+                                    # otherwise ignore malformed token
 
-            if new_grid is not None:
-                base = st.session_state[session_key_import].copy()
+            # If nothing detected for multiple years and the user disabled multi-year, bind to import_year if any grid exists
+            if not years_found and not import_multi_years:
+                # ensure at least an empty grid exists under import_year to trigger the merge logic below
+                pending[int(import_year)] = pending.get(int(import_year), empty_grid())
+                years_found.add(int(import_year))
+
+            # Apply to session_state per year
+            updated_years = []
+            for y, new_grid in pending.items():
+                _ensure_session_grid(int(y))
+                base = st.session_state[f"grid_df::{int(y)}"].copy()
+                # Normalize new_grid just in case
+                new_grid = _norm_df(new_grid)
                 if merge_mode.startswith("Αντικατάσταση"):
-                    st.session_state[session_key_import] = _norm_df(new_grid)
+                    st.session_state[f"grid_df::{int(y)}"] = new_grid
                 else:
                     merged = base.copy().astype("string")
                     for col in GRID_COLUMNS:
                         left = merged[col].fillna("")
                         right = new_grid[col].fillna("")
                         merged[col] = np.where(right.astype(str).str.strip() != "", right, left)
-                    st.session_state[session_key_import] = _norm_df(merged)
-                st.success(f"Ο πίνακας ενημερώθηκε από το Excel στο έτος {import_year}. Μην ξεχάσεις να πατήσεις Αποθήκευση.")
+                    st.session_state[f"grid_df::{int(y)}"] = _norm_df(merged)
+                updated_years.append(int(y))
+
+            if updated_years:
+                updated_years = sorted(set(updated_years))
+                st.success("Ενημερώθηκαν πίνακες για έτη: " + ", ".join(str(x) for x in updated_years) + ". Μην ξεχάσεις να πατήσεις Αποθήκευση (ανά έτος).")
+            else:
+                st.warning("Δεν ανιχνεύθηκαν έγκυρα δεδομένα για ενημέρωση.")
         except Exception as e:
             st.error(f"Αποτυχία ανάγνωσης Excel: {e}")
 
