@@ -1,14 +1,14 @@
 # streamlit_app.py
 # -*- coding: utf-8 -*-
 """
-Εφαρμογή κρατήσεων (Ιανουάριος–Δεκέμβριος) με όμορφο UI και μόνιμη αποθήκευση σε Excel.
+Εφαρμογή κρατήσεων (Ιανουάριος–Δεκέμβριος) με όμορφο UI και μόνιμη αποθήκευση σε SQLite.
 - ΔΟΜΗ ΠΙΝΑΚΑ: Για ΚΑΘΕ μήνα υπάρχουν 3 ξεχωριστές στήλες (Ισόγειο, Α, Β).
   Παράδειγμα στηλών: «Απρίλιος Ισόγειο», «Απρίλιος Α», «Απρίλιος Β», «Μάιος Ισόγειο», ...
 - Κάθε κελί δέχεται πολλές τιμές (μία ή περισσότερες κρατήσεις) χωρισμένες με κόμμα.
   * Μορφή εγγραφής: YY ή προαιρετικά YY:τιμή (π.χ. 22 ή 22:120)
   * ΔΕΝ γράφουμε πια α/β/γ μέσα στο κελί — ο όροφος προκύπτει από τη στήλη.
 - Στατιστικά: πλήθος κρατήσεων ανά έτος, ανά όροφο, και μέση τιμή.
-- Μόνιμη αποθήκευση: αρχεία Excel ανά μήνα (dev_{YYYY}_{MONTH}.xlsx) και ενιαίος πίνακας bookings.xlsx.
+- Μόνιμη αποθήκευση: bookings.db στον τοπικό φάκελο.
 
 Οδηγίες εκτέλεσης:
     streamlit run streamlit_app.py
@@ -16,23 +16,26 @@
 
 from __future__ import annotations
 import re
+import os
+import sqlite3
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import openpyxl
 
-# Global constant: days of month 1..31 (defined early to be available in any rerun path)
-DAYS = list(range(1, 32))
-# extra safety: if Streamlit partial rerun wipes globals, re-define DAYS
-if 'DAYS' not in globals() or not isinstance(DAYS, list) or len(DAYS) != 31:
-    DAYS = list(range(1, 32))
-
 APP_TITLE = "📅 Κρατήσεις Διαμερισμάτων (Ιαν–Δεκ)"
+# Χρησιμοποιούμε επίμονο φάκελο στο Streamlit Cloud (/mount/data) αν υπάρχει/είναι εγγράψιμος
+_DATA_DIR = Path("/mount/data")
+if _DATA_DIR.exists() and os.access(_DATA_DIR, os.W_OK):
+    DB_PATH = _DATA_DIR / "bookings.db"
+else:
+    DB_PATH = Path("bookings.db")
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-
+DAYS = list(range(1, 32))  # 1–31
 
 MONTHS = [
     "Ιανουάριος",
@@ -48,6 +51,7 @@ MONTHS = [
     "Νοέμβριος",
     "Δεκέμβριος",
 ]
+DAYS = list(range(1, 32))  # 1–31
 
 
 # Μήνες EN για αρχεία (όνομα αρχείου)
@@ -101,7 +105,7 @@ def load_bookings_df() -> pd.DataFrame:
         except Exception:
             pass
     return pd.DataFrame(columns=cols)
-TOKEN_DEV_RE = re.compile(r"^(\d+(?:\.\d+)?):(\d{4});([A-Z]+)(?:;(EX))?$")
+TOKEN_DEV_RE = re.compile(r"^(\d+(?:\.\d+)?):(\d{4});([A-Z]+)$")
 
 def month_en_of(month_gr: str) -> str:
     return MONTH_EN[month_gr]
@@ -147,6 +151,127 @@ st.markdown(
 if "selected_year" not in st.session_state:
     st.session_state["selected_year"] = 2024  # default
 
+# ---------- Βάση δεδομένων ----------
+
+def get_conn() -> sqlite3.Connection:
+    # check_same_thread False για να μην σκάει σε reruns/πολλαπλά threads του Streamlit
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=5000;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    return conn
+
+# Χρησιμοποιούμε νέο σχήμα για να αποφύγουμε συγκρούσεις με παλιά tables
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS cells (
+  month  TEXT    NOT NULL,
+  floor  TEXT    NOT NULL,
+  day    INTEGER NOT NULL,
+  entries TEXT DEFAULT '',
+  PRIMARY KEY(month, floor, day)
+);
+
+CREATE TABLE IF NOT EXISTS bookings (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  year    INTEGER NOT NULL,
+  floor   TEXT    NOT NULL,
+  month   TEXT    NOT NULL,
+  day     INTEGER NOT NULL,
+  price   REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_bookings_year ON bookings(year);
+CREATE INDEX IF NOT EXISTS idx_bookings_floor ON bookings(floor);
+CREATE INDEX IF NOT EXISTS idx_bookings_month ON bookings(month);
+"""
+
+def ensure_schema() -> None:
+    with get_conn() as c:
+        # Αν δεν υπάρχει καθόλου, φτιάξ' το
+        c.executescript(SCHEMA_SQL)
+        try:
+            cols = pd.read_sql_query("PRAGMA table_info(cells)", c)
+            colnames = set(cols["name"].tolist())
+            if "floor" not in colnames:
+                # Μεταφορά από παλιό σχήμα: month, day, entries
+                c.execute("BEGIN")
+                c.execute("ALTER TABLE cells RENAME TO cells_old;")
+                c.executescript(SCHEMA_SQL)
+                # Βάλε τα παλιά ως Ισόγειο
+                c.execute(
+                    "INSERT INTO cells(month, floor, day, entries)\n"
+                    "SELECT month, 'Ισόγειο' AS floor, day, entries FROM cells_old;"
+                )
+                c.execute("DROP TABLE cells_old;")
+                c.execute("COMMIT")
+        except Exception:
+            # Αν κάτι πάει στραβά, ας μην μπλοκάρουμε την εφαρμογή
+            pass
+
+ensure_schema()
+
+# ---------- Parsing κρατήσεων ----------
+# Δεχόμαστε: 2-ψηφιο έτος και προαιρετική τιμή: 22 ή 22:120
+TOKEN_RE = re.compile(r"^\s*(\d{2})(?:\s*:\s*(\d+(?:\.\d+)?))?\s*$")
+
+
+def two_digit_to_year(two: int) -> int:
+    return 2000 + two
+
+
+def parse_cell_entries(cell: str) -> List[Tuple[int, Optional[float]]]:
+    """Επιστρέφει λίστα από (year, price?) για ένα κελί (όροφος προκύπτει από τη στήλη)."""
+    if cell is None:
+        return []
+    s = str(cell).strip()
+    if not s:
+        return []
+    out: List[Tuple[int, Optional[float]]] = []
+    for raw in re.split(r",|;|/|\\n", s):
+        token = raw.strip()
+        if not token:
+            continue
+        m = TOKEN_RE.match(token)
+        if not m:
+            # Αγνόησε μη έγκυρα τμήματα
+            continue
+        yy, price = m.group(1), m.group(2)
+        year = two_digit_to_year(int(yy))
+        price_val = float(price) if price is not None else None
+        out.append((year, price_val))
+    return out
+
+# --- Serialize entries helper ---
+def serialize_entries(entries: List[Tuple[int, Optional[float]]]) -> str:
+    """Δέχεται λίστα (year, price?) και επιστρέφει tokens τύπου 'YY' ή 'YY:price' χωρισμένα με κόμμα."""
+    toks = []
+    for (y, p) in entries:
+        yy = int(y) % 100
+        if p is None:
+            toks.append(f"{yy:02d}")
+        else:
+            toks.append(f"{yy:02d}:{float(p):g}")
+    return ",".join(toks)
+
+# --- Helpers: Επιλογή ενός token και εμφάνιση τιμής για το τρέχον έτος ---
+def select_single_token(tokens: List[Tuple[int, Optional[float]]], current_year: int) -> Optional[Tuple[int, Optional[float]]]:
+    """Επέλεξε ένα token: προτεραιότητα στο τρέχον έτος, αλλιώς της νεότερης χρονιάς."""
+    if not tokens:
+        return None
+    cur = [t for t in tokens if int(t[0]) == int(current_year)]
+    if cur:
+        return cur[-1]
+    return max(tokens, key=lambda t: int(t[0]))
+
+def display_price_for_year(cell_text: str, current_year: int) -> str:
+    """Εμφάνισε μόνο την τιμή του επιλεγμένου έτους (ή της νεότερης αν δεν υπάρχει τρέχον), χωρίς YY."""
+    toks = parse_cell_entries(cell_text)
+    chosen = select_single_token(toks, current_year)
+    if chosen is None:
+        return ""
+    _y, p = chosen
+    return "" if p is None else (f"{p:g}")
 
 # ---------- Βοηθητικά για στήλες ----------
 
@@ -166,9 +291,7 @@ def empty_grid() -> pd.DataFrame:
 
 # --- Helpers for dev token parsing/serialization (for per-year/month files) ---
 def parse_dev_tokens(cell: str) -> list[dict]:
-    """Parse tokens of form 100:2024;APRIL or 100:2024;APRIL;EX into dicts.
-    Returns list of dicts with keys: price (float), year (int), month_en (str), kind ('EX' or 'REV').
-    """
+    """Parse tokens of form 100:2024;APRIL into dicts."""
     if not cell or not isinstance(cell, str):
         return []
     toks = []
@@ -180,79 +303,11 @@ def parse_dev_tokens(cell: str) -> list[dict]:
                 "price": float(m.group(1)),
                 "year": int(m.group(2)),
                 "month_en": m.group(3).upper(),
-                "kind": (m.group(4) or "REV"),
             })
     return toks
 
 def serialize_dev(toks: list[dict]) -> str:
-    parts = []
-    for e in toks:
-        price = float(e['price']) if 'price' in e else None
-        year = int(e['year']) if 'year' in e else None
-        month_en = e.get('month_en', '').upper()
-        kind = e.get('kind', 'REV')
-        if price is not None and year is not None and month_en:
-            base = f"{price:g}:{year};{month_en}"
-            if kind == 'EX':
-                base += ";EX"
-            parts.append(base)
-    return ",".join(parts)
-# ---- Monthly (per-year) revenue/expense storage ----
-MONTHLY_REV_XLSX = DATA_DIR / "monthly_revenue.xlsx"
-MONTHLY_EXP_XLSX = DATA_DIR / "monthly_expense.xlsx"
-
-def _empty_monthly_frame() -> pd.DataFrame:
-    df = pd.DataFrame({"Μήνας": MONTHS})
-    for f in FLOORS_DISPLAY:
-        df[f] = ""
-    return df
-
-def _load_monthly(kind: str, year: int) -> pd.DataFrame:
-    path = MONTHLY_REV_XLSX if kind == "REV" else MONTHLY_EXP_XLSX
-    sheet = str(year)
-    if path.exists():
-        try:
-            df = pd.read_excel(path, sheet_name=sheet)
-            # Ensure correct columns
-            keep = ["Μήνας"] + FLOORS_DISPLAY
-            for c in keep:
-                if c not in df.columns:
-                    df[c] = ""
-            df = df[keep]
-            # Normalize month order and fill missing
-            df = df.set_index("Μήνας").reindex(MONTHS).fillna("").reset_index()
-            return df.astype("string")
-        except Exception:
-            pass
-    return _empty_monthly_frame().astype("string")
-
-def _save_monthly(kind: str, year: int, df: pd.DataFrame) -> tuple[bool, str | None]:
-    path = MONTHLY_REV_XLSX if kind == "REV" else MONTHLY_EXP_XLSX
-    df = df.astype("string").fillna("")
-    try:
-        # Read existing workbook sheets if any
-        book = {}
-        if path.exists():
-            try:
-                x = pd.ExcelFile(path)
-                for sn in x.sheet_names:
-                    book[sn] = x.parse(sn)
-            except Exception:
-                book = {}
-        book[str(year)] = df
-        with pd.ExcelWriter(path, engine="openpyxl") as xl:
-            for sn, sdf in book.items():
-                sdf.to_excel(xl, sheet_name=str(sn), index=False)
-        return True, None
-    except Exception as e:
-        return False, str(e)
-
-def display_price_for_year_month_from_token(cell_text: str, year: int, month_en: str) -> str:
-    toks = parse_dev_tokens(str(cell_text or ""))
-    for e in toks:
-        if int(e["year"]) == int(year) and e["month_en"].upper() == month_en.upper():
-            return f"{e['price']:g}"
-    return ""
+    return ",".join(f"{float(e['price']):g}:{int(e['year'])};{e['month_en'].upper()}" for e in toks if "price" in e and "year" in e and "month_en" in e)
 
 def dedupe_by_key(toks: list[dict]) -> list[dict]:
     # Remove duplicates by (year, month_en): keep only the last token for each (year, month_en)
@@ -562,7 +617,7 @@ with st.sidebar:
             st.success("Καθαρίστηκαν ΟΛΟΙ οι μήνες σε ΟΛΑ τα έτη (2022–2025). Το ενιαίο bookings αρχείο ανανεώθηκε.")
 
 # ---------- Πίνακας (HTML‑styled) με φόρμα αποθήκευσης ----------
-main_tabs = st.tabs(["Καταχώρηση Εσόδων", "Καταχώρηση Εξόδων", "Στατιστικά"])
+main_tabs = st.tabs(["Καταχώρηση", "Στατιστικά"])  # δύο σελίδες: εισαγωγή & στατιστικά
 
 with main_tabs[0]:
     # Reload grid whenever the selected year changes
@@ -659,72 +714,8 @@ with main_tabs[0]:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
-with main_tabs[1]:
-    st.markdown(
-        """
-        <div class="card">
-          <h3>🧾 Καταχώρηση Εξόδων (Μηνιαία)</h3>
-          <div class="small-muted">Εισάγετε μία τιμή ανά μήνα και όροφο. Οι τιμές αποθηκεύονται ως tokens <code>τιμή:YYYY;MONTH;EX</code> για σαφή διάκριση από τα έσοδα.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    exp_year = st.selectbox("Έτος εξόδων", [2022, 2023, 2024, 2025], index=[2022, 2023, 2024, 2025].index(int(st.session_state.get("selected_year", 2024))), key="exp_selected_year")
-    exp_year = int(exp_year)
-    exp_key = f"monthly_exp::{exp_year}"
-    if exp_key not in st.session_state:
-        st.session_state[exp_key] = _load_monthly("EX", exp_year)
-
-    with st.form("expense_monthly_form", clear_on_submit=False):
-        tabs_exp = st.tabs(MONTHS)
-        new_vals_exp = {}
-        for i, m in enumerate(MONTHS):
-            with tabs_exp[i]:
-                st.markdown(f"### {m}")
-                header_cols = st.columns([0.7, 1, 1, 1], gap="small")
-                header_cols[0].markdown("<div class='col-header'>Μήνας</div>", unsafe_allow_html=True)
-                header_cols[1].markdown("<div class='col-header'>Ισόγειο</div>", unsafe_allow_html=True)
-                header_cols[2].markdown("<div class='col-header'>Α</div>", unsafe_allow_html=True)
-                header_cols[3].markdown("<div class='col-header'>Β</div>", unsafe_allow_html=True)
-
-                cols = st.columns([0.7, 1, 1, 1], gap="small")
-                cols[0].markdown(f"<div class='day-cell'>{m}</div>", unsafe_allow_html=True)
-                for j, f in enumerate(FLOORS_DISPLAY, start=1):
-                    month_en = MONTH_EN[m]
-                    # placeholder from existing value for (exp_year, month)
-                    existing = str(st.session_state[exp_key].loc[st.session_state[exp_key]['Μήνας'] == m, f].iloc[0] if m in st.session_state[exp_key]['Μήνας'].values else "")
-                    placeholder = display_price_for_year_month_from_token(existing, exp_year, month_en)
-                    k = f"exp::{m}::{f}::{exp_year}"
-                    val = cols[j].text_input(f"{m} {f}", value="", key=k, placeholder=str(placeholder or ""), label_visibility="collapsed")
-                    new_vals_exp[(m, f)] = val
-        submitted_exp = st.form_submit_button("💾 Αποθήκευση Εξόδων", type="primary")
-
-    if submitted_exp:
-        updated = st.session_state[exp_key].copy()
-        for (m, f), v in new_vals_exp.items():
-            raw = str(v or "").strip()
-            if raw == "":
-                continue
-            if not re.match(r"^\d+(?:\.\d+)?$", raw):
-                continue
-            token = f"{float(raw):g}:{int(exp_year)};{MONTH_EN[m]};EX"
-            # write token to the single monthly cell
-            idx = updated.index[updated['Μήνας'] == m]
-            if len(idx) == 0:
-                # ensure row exists
-                new_row = {"Μήνας": m, "Ισόγειο": "", "Α": "", "Β": ""}
-                updated = pd.concat([updated, pd.DataFrame([new_row])], ignore_index=True)
-                idx = updated.index[updated['Μήνας'] == m]
-            updated.at[idx[0], f] = token
-        st.session_state[exp_key] = updated.astype("string").fillna("")
-        ok, err = _save_monthly("EX", exp_year, st.session_state[exp_key])
-        if ok:
-            st.success("Αποθηκεύτηκαν τα έξοδα (μηνιαία).")
-        else:
-            st.error(f"Σφάλμα αποθήκευσης εξόδων: {err}")
-
 # ---------- Στατιστικά (δεύτερη σελίδα) ----------
-with main_tabs[2]:
+with main_tabs[1]:
     st.markdown(
         """
     <div class="card">
