@@ -105,7 +105,7 @@ def load_bookings_df() -> pd.DataFrame:
         except Exception:
             pass
     return pd.DataFrame(columns=cols)
-TOKEN_DEV_RE = re.compile(r"^(\d+(?:\.\d+)?):(\d{4});([A-Z]+)$")
+TOKEN_DEV_RE = re.compile(r"^(\d+(?:\.\d+)?):(\d{4});([A-Z]+)(?:;(EX))?$")
 
 def month_en_of(month_gr: str) -> str:
     return MONTH_EN[month_gr]
