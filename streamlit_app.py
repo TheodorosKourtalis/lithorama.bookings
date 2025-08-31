@@ -778,6 +778,192 @@ with st.sidebar:
             st.error(f"Αποτυχία ανάγνωσης Excel: {e}")
 
     st.markdown("—")
+    st.subheader("Εισαγωγή Εξόδων από Excel")
+    expense_import_year = st.selectbox(
+        "Έτος (fallback για bare numbers)",
+        [2022, 2023, 2024, 2025],
+        index=[2022, 2023, 2024, 2025].index(2024),
+        key="expense_import_year_select",
+        help="Αν το αρχείο έχει σκέτους αριθμούς χωρίς έτος, θα χρησιμοποιηθεί αυτό το έτος."
+    )
+    import_multi_years_exp = st.checkbox(
+        "Ανίχνευση & εφαρμογή για ΟΛΑ τα έτη/μήνες (αν υπάρχουν στο αρχείο)",
+        value=True,
+        key="import_multi_years_exp",
+        help="Αν το αρχείο περιέχει δεδομένα για πολλά έτη/μήνες, θα ενημερωθούν αυτόματα τα αντίστοιχα έτη. Αν όχι, χρησιμοποιείται το έτος fallback."
+    )
+
+    up_exp = st.file_uploader(
+        "Επίλεξε Excel εξόδων",
+        type=["xlsx", "xls"],
+        key="expense_file_uploader",
+        help=(
+            "Δέχεται είτε grid-format με στήλες 'Ισόγειο', 'Α', 'Β' και γραμμές τους μήνες (προαιρετική στήλη 'Μήνας'), "
+            "είτε long-format με στήλες: month|Μήνας (GR ή EN), floor (Ισόγειο/Α/Β), price (αριθμός)."
+        ),
+    )
+    st.caption("Drag and drop file hereLimit 200MB per file • XLSX, XLS")
+    merge_mode_exp = st.radio(
+        "Τρόπος ενημέρωσης",
+        ["Αντικατάσταση όλων", "Συγχώνευση (μόνο μη κενά)"],
+        index=1,
+        key="merge_mode_exp",
+        help=(
+            "Αντικατάσταση: το αρχείο αντικαθιστά όλο το πλέγμα εξόδων στο επιλεγμένο έτος.\n"
+            "Συγχώνευση: μόνο τα μη κενά του αρχείου γράφουν πάνω στα υπάρχοντα."
+        ),
+    )
+
+    if up_exp is not None and st.button("↪︎ Ενημέρωση εξόδων από Excel", key="btn_import_expenses_from_excel"):
+        try:
+            src_exp = pd.read_excel(up_exp, sheet_name=0)
+            df_exp = src_exp.copy()
+            # Normalize column names (lowercase trimmed)
+            cols_lower = {c.lower().strip(): c for c in df_exp.columns}
+
+            # Helpers
+            def _empty_expense_grid():
+                df0 = pd.DataFrame("", index=MONTHS, columns=FLOORS_DISPLAY, dtype="string")
+                df0.index.name = "Μήνας"
+                return df0
+
+            pending_exp: dict[int, pd.DataFrame] = {}
+            years_found_exp: set[int] = set()
+
+            def _get_out_df(y: int) -> pd.DataFrame:
+                y = int(y)
+                if y not in pending_exp:
+                    if merge_mode_exp.startswith("Αντικατάσταση"):
+                        pending_exp[y] = _empty_expense_grid()
+                    else:
+                        pending_exp[y] = load_monthly_expense_df(y)
+                return pending_exp[y]
+
+            # Detect long format
+            is_long_exp = set(["floor", "price"]).issubset(set(cols_lower.keys())) and ("month" in cols_lower or "μήνας" in cols_lower)
+
+            if is_long_exp:
+                # Rename to unified keys
+                df_exp = df_exp.rename(columns={
+                    cols_lower.get("month", cols_lower.get("μήνας", "month")): "month_raw",
+                    cols_lower["floor"]: "floor",
+                    cols_lower["price"]: "price",
+                })
+                # Optional explicit year column
+                has_year_col = "year" in cols_lower
+                if has_year_col:
+                    df_exp = df_exp.rename(columns={cols_lower["year"]: "year"})
+
+                for _, r in df_exp.iterrows():
+                    try:
+                        month_val = str(r.get("month_raw")).strip()
+                        floor_val = str(r.get("floor")).strip()
+                        if floor_val not in FLOORS_DISPLAY:
+                            continue
+                        # Resolve month (accept GR or EN)
+                        if month_val in MONTHS:
+                            month_gr = month_val
+                            month_en = MONTH_EN[month_gr]
+                        else:
+                            month_en_u = month_val.upper()
+                            month_gr = MONTH_GR_FROM_EN.get(month_en_u)
+                            if not month_gr:
+                                continue
+                            month_en = month_en_u
+                        # Determine year (fallback if not provided/NaN)
+                        y = int(r.get("year")) if (has_year_col and not pd.isna(r.get("year"))) else int(expense_import_year)
+                        # Read price (number); ignore non-numeric
+                        if pd.isna(r.get("price")):
+                            continue
+                        price_val = float(r.get("price"))
+                        token = f"{price_val:g}:{int(y)};{month_en};EX"
+                        out_df_y = _get_out_df(y)
+                        out_df_y.at[month_gr, floor_val] = token
+                        years_found_exp.add(int(y))
+                    except Exception:
+                        continue
+            else:
+                # Grid-format: optional 'Μήνας' column as index; columns should include floors
+                cur = df_exp.copy()
+                if "Μήνας" in cur.columns:
+                    cur = cur.set_index("Μήνας")
+                for m_gr in MONTHS:
+                    for f in FLOORS_DISPLAY:
+                        try:
+                            val = str(cur.at[m_gr, f] if (m_gr in cur.index and f in cur.columns) else "").strip()
+                        except Exception:
+                            val = ""
+                        if not val:
+                            continue
+                        month_en = MONTH_EN[m_gr]
+                        # Accept either bare number or token; tokens may carry explicit year
+                        mnum = re.match(r"^\d+(?:\.\d+)?$", val)
+                        if mnum:
+                            price_val = float(mnum.group(0))
+                            y = int(expense_import_year)
+                            out_df_y = _get_out_df(y)
+                            out_df_y.at[m_gr, f] = f"{price_val:g}:{int(y)};{month_en};EX"
+                            years_found_exp.add(int(y))
+                        else:
+                            mm = TOKEN_DEV_RE.match(val)
+                            if mm:
+                                price_val = float(mm.group(1))
+                                y2 = int(mm.group(2)) if mm.group(2) else int(expense_import_year)
+                                men = mm.group(3).upper()
+                                kind = (mm.group(4) or "").upper()
+                                if kind == "EX" and men == month_en:
+                                    out_df_y = _get_out_df(y2)
+                                    out_df_y.at[m_gr, f] = f"{price_val:g}:{int(y2)};{men};EX"
+                                    years_found_exp.add(int(y2))
+                            # ignore malformed tokens
+
+            # If nothing detected for multiple years and the user disabled multi-year, bind to selected fallback year
+            if not years_found_exp and not import_multi_years_exp:
+                y = int(expense_import_year)
+                pending_exp[y] = pending_exp.get(y, _get_out_df(y))
+                years_found_exp.add(y)
+
+            # Save per-year sheets and refresh combined workbook
+            if pending_exp:
+                errors = []
+                for y, out_df in pending_exp.items():
+                    ok_exp_imp, err_exp_imp = save_monthly_expense_df(int(y), out_df)
+                    if not ok_exp_imp and err_exp_imp:
+                        errors.append(f"{y}: {err_exp_imp}")
+                try:
+                    write_combined_excel(load_bookings_df())
+                except Exception:
+                    pass
+                if errors:
+                    st.error("Ενημερώθηκαν αλλά **ΟΧΙ όλα** τα έτη εξόδων λόγω σφαλμάτων: " + "; ".join(errors))
+                else:
+                    yrs = ", ".join(str(int(y)) for y in sorted(pending_exp.keys()))
+                    st.success("Ενημερώθηκαν **και αποθηκεύτηκαν** τα μηνιαία έξοδα για έτη: " + yrs + ".")
+                c1, c2 = st.columns(2)
+                with c1:
+                    if MONTHLY_EXPENSE_XLSX.exists():
+                        st.download_button(
+                            "⬇️ Λήψη monthly_expense.xlsx",
+                            data=open(MONTHLY_EXPENSE_XLSX, "rb").read(),
+                            file_name="monthly_expense.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_monthly_expense_after_import",
+                        )
+                with c2:
+                    if BOOKINGS_XLSX.exists():
+                        st.download_button(
+                            "⬇️ Λήψη bookings.xlsx (με φύλλο expenses)",
+                            data=open(BOOKINGS_XLSX, "rb").read(),
+                            file_name="bookings.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_bookings_after_expense_import",
+                        )
+            else:
+                st.warning("Δεν ανιχνεύθηκαν έγκυρα δεδομένα εξόδων για ενημέρωση.")
+        except Exception as e:
+            st.error(f"Αποτυχία ανάγνωσης Excel εξόδων: {e}")
+
+    st.markdown("—")
     st.subheader("Καθαρισμός")
     clear_year = st.selectbox("Έτος", [2022, 2023, 2024, 2025], index=2, key="clear_year_select")
     session_key_clear = f"grid_df::{clear_year}"
