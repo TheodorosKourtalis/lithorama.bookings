@@ -76,6 +76,8 @@ MONTH_NUM = {m: i+1 for i, m in enumerate(MONTHS)}
 
 # Όροφοι (εμφάνιση)
 FLOORS_DISPLAY = ["Ισόγειο", "Α", "Β"]
+# For expenses we also allow a general, non-floor-specific bucket
+EXPENSE_FLOORS_DISPLAY = ["Ισόγειο", "Α", "Β", "Γενικά"]
 
 # Χαρτογράφηση εμφάνισης -> τι θα γράφεται στη ΒΔ
 FLOOR_DB_VALUE = {
@@ -117,7 +119,7 @@ def build_expenses_long() -> pd.DataFrame:
         if "Μήνας" in cur.columns:
             cur = cur.set_index("Μήνας")
         for m_gr in MONTHS:
-            for f in FLOORS_DISPLAY:
+            for f in EXPENSE_FLOORS_DISPLAY:
                 val = str(cur.at[m_gr, f] if (m_gr in cur.index and f in cur.columns) else "").strip()
                 if not val:
                     continue
@@ -413,7 +415,7 @@ def display_price_for_year_month(cell_text: str, year: int, month_en: str) -> st
     return ""
 # ===================== Helpers for Monthly Expenses =====================
 def load_monthly_expense_df(year: int) -> pd.DataFrame:
-    df = pd.DataFrame("", index=MONTHS, columns=FLOORS_DISPLAY, dtype="string")
+    df = pd.DataFrame("", index=MONTHS, columns=EXPENSE_FLOORS_DISPLAY, dtype="string")
     df.index.name = "Μήνας"
     if MONTHLY_EXPENSE_XLSX.exists():
         try:
@@ -423,7 +425,7 @@ def load_monthly_expense_df(year: int) -> pd.DataFrame:
                 cur = xls[sheet]
                 if "Μήνας" in cur.columns:
                     cur = cur.set_index("Μήνας")
-                for f in FLOORS_DISPLAY:
+                for f in EXPENSE_FLOORS_DISPLAY:
                     if f in cur.columns:
                         df.loc[MONTHS, f] = cur[f].astype("string").reindex(MONTHS).fillna("")
         except Exception:
@@ -798,8 +800,8 @@ with st.sidebar:
         type=["xlsx", "xls"],
         key="expense_file_uploader",
         help=(
-            "Δέχεται είτε grid-format με στήλες 'Ισόγειο', 'Α', 'Β' και γραμμές τους μήνες (προαιρετική στήλη 'Μήνας'), "
-            "είτε long-format με στήλες: month|Μήνας (GR ή EN), floor (Ισόγειο/Α/Β), price (αριθμός)."
+            "Δέχεται είτε grid-format με στήλες 'Ισόγειο', 'Α', 'Β', 'Γενικά' και γραμμές τους μήνες (προαιρετική στήλη 'Μήνας'), "
+            "είτε long-format με στήλες: month|Μήνας (GR ή EN), floor (Ισόγειο/Α/Β/Γενικά), price (αριθμός)."
         ),
     )
     st.caption("Drag and drop file hereLimit 200MB per file • XLSX, XLS")
@@ -823,7 +825,7 @@ with st.sidebar:
 
             # Helpers
             def _empty_expense_grid():
-                df0 = pd.DataFrame("", index=MONTHS, columns=FLOORS_DISPLAY, dtype="string")
+                df0 = pd.DataFrame("", index=MONTHS, columns=EXPENSE_FLOORS_DISPLAY, dtype="string")
                 df0.index.name = "Μήνας"
                 return df0
 
@@ -858,7 +860,7 @@ with st.sidebar:
                     try:
                         month_val = str(r.get("month_raw")).strip()
                         floor_val = str(r.get("floor")).strip()
-                        if floor_val not in FLOORS_DISPLAY:
+                        if floor_val not in EXPENSE_FLOORS_DISPLAY:
                             continue
                         # Resolve month (accept GR or EN)
                         if month_val in MONTHS:
@@ -888,7 +890,7 @@ with st.sidebar:
                 if "Μήνας" in cur.columns:
                     cur = cur.set_index("Μήνας")
                 for m_gr in MONTHS:
-                    for f in FLOORS_DISPLAY:
+                    for f in EXPENSE_FLOORS_DISPLAY:
                         try:
                             val = str(cur.at[m_gr, f] if (m_gr in cur.index and f in cur.columns) else "").strip()
                         except Exception:
@@ -1134,13 +1136,14 @@ with main_tabs[1]:
         for i, m in enumerate(MONTHS):
             with tabs_exp[i]:
                 st.markdown(f"### {m}")
-                header_cols = st.columns([1, 1, 1], gap="small")
+                header_cols = st.columns([1, 1, 1, 1], gap="small")
                 header_cols[0].markdown("<div class='col-header'>Ισόγειο</div>", unsafe_allow_html=True)
                 header_cols[1].markdown("<div class='col-header'>Α</div>", unsafe_allow_html=True)
                 header_cols[2].markdown("<div class='col-header'>Β</div>", unsafe_allow_html=True)
+                header_cols[3].markdown("<div class='col-header'>Γενικά</div>", unsafe_allow_html=True)
 
-                row = st.columns([1, 1, 1], gap="small")
-                for j, f in enumerate(FLOORS_DISPLAY):
+                row = st.columns([1, 1, 1, 1], gap="small")
+                for j, f in enumerate(EXPENSE_FLOORS_DISPLAY):
                     month_en = MONTH_EN[m]
                     raw_initial = str(exp_df.at[m, f] if (m in exp_df.index and f in exp_df.columns) else "")
                     placeholder_val = display_expense_for_year_month(raw_initial, int(exp_year), month_en)
