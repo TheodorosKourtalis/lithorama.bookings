@@ -1671,6 +1671,112 @@ with main_tabs[2]:
         else:
             st.info("Δεν υπάρχουν δεδομένα για μερίδιο εσόδων.")
 
+        # ===================== EXPENSES & PROFITS =====================
+        st.markdown("---")
+        st.subheader("Έξοδα & Κέρδη")
+
+        # Load expenses (long-format) from monthly_expense.xlsx via helper
+        exp_long = build_expenses_long()
+        if exp_long is None or exp_long.empty:
+            st.info("Δεν υπάρχουν καταχωρημένα έξοδα (monthly_expense.xlsx).")
+        else:
+            # Coerce types and order months
+            exp_long["year"] = pd.to_numeric(exp_long["year"], errors="coerce").astype("Int64")
+            exp_long["price"] = pd.to_numeric(exp_long["price"], errors="coerce")
+            exp_long["floor"] = exp_long["floor"].astype("string")
+            exp_long["month"] = pd.Categorical(exp_long["month"], categories=MONTHS, ordered=True)
+
+            # Filters (separate selection for expense categories so we can include 'Γενικά')
+            exp_floors_sel = st.multiselect(
+                "Κατηγορίες εξόδων",
+                EXPENSE_FLOORS_DISPLAY,
+                default=EXPENSE_FLOORS_DISPLAY,
+                key="stats_expense_floors_sel",
+            )
+            exp_fdf = exp_long[exp_long["floor"].isin(exp_floors_sel)].copy()
+            # Year range synchronized with bookings year_range if it exists
+            if years_available:
+                exp_fdf = exp_fdf[(exp_fdf["year"] >= year_range[0]) & (exp_fdf["year"] <= year_range[1])]
+
+            # ---- KPIs for Expenses ----
+            total_expenses = float(exp_fdf["price"].sum()) if not exp_fdf.empty else 0.0
+            st.metric("Σύνολο εξόδων (φιλτραρισμένα)", f"{total_expenses:,.0f}")
+
+            # ---- Expenses per Year ----
+            st.subheader("Έξοδα ανά έτος")
+            per_year_exp = exp_fdf.groupby("year")["price"].sum().reset_index().rename(columns={"price":"έξοδα"}) if not exp_fdf.empty else pd.DataFrame(columns=["year","έξοδα"]) 
+            if not per_year_exp.empty:
+                st.bar_chart(per_year_exp.set_index("year"))
+                explain("Συνολικά έξοδα ανά έτος για τις επιλεγμένες κατηγορίες.")
+            else:
+                st.info("Δεν υπάρχουν έξοδα στο επιλεγμένο εύρος.")
+
+            # ---- Expenses per Year & Floor (stacked) ----
+            st.subheader("Έξοδα ανά έτος & κατηγορία")
+            per_year_floor_exp = exp_fdf.groupby(["year","floor"])["price"].sum().reset_index()
+            if not per_year_floor_exp.empty:
+                pv_exp = per_year_floor_exp.pivot(index="year", columns="floor", values="price").fillna(0)
+                st.bar_chart(pv_exp)
+                explain("Συνεισφορά κάθε κατηγορίας (Ισόγειο/Α/Β/Γενικά) στα έξοδα ανά έτος.")
+            else:
+                st.info("Δεν υπάρχουν αναλυμένα έξοδα ανά κατηγορία.")
+
+            # ---- Monthly Expenses Seasonality ----
+            st.subheader("Έξοδα ανά μήνα (εποχικότητα)")
+            per_month_exp = exp_fdf.groupby("month")["price"].sum().reindex(MONTHS).fillna(0)
+            st.line_chart(per_month_exp)
+            explain("Ποιοι μήνες επιβαρύνουν περισσότερο τα έξοδα.")
+
+            # ===================== PROFITS =====================
+            st.subheader("Κέρδη ανά έτος")
+            # Revenue per year from filtered bookings (fdf built earlier)
+            rev_per_year = (
+                fdf.dropna(subset=["price"]).groupby("year")["price"].sum().reset_index().rename(columns={"price":"έσοδα"})
+                if not fdf.empty else pd.DataFrame(columns=["year","έσοδα"]) 
+            )
+            # Align expenses per year to compare
+            exp_per_year = per_year_exp.rename(columns={"έξοδα":"expenses"}) if "έξοδα" in per_year_exp.columns else pd.DataFrame(columns=["year","expenses"]) 
+            prof = pd.merge(rev_per_year, exp_per_year, on="year", how="outer").fillna(0)
+            if not prof.empty:
+                prof["κέρδη"] = prof["έσοδα"] - prof["expenses"]
+                # KPI for latest year in range
+                if len(prof["year"].astype("Int64").dropna())>0:
+                    last_year_prof = int(prof["year"].max())
+                    val_profit = float(prof.loc[prof["year"]==last_year_prof, "κέρδη"].iloc[0])
+                    st.metric(f"Κέρδη ({last_year_prof})", f"{val_profit:,.0f}")
+                st.bar_chart(prof.set_index("year")["κέρδη"])
+                explain("Κέρδη = Έσοδα − Έξοδα (περιλαμβάνονται τα 'Γενικά' έξοδα).")
+            else:
+                st.info("Δεν μπορούν να υπολογιστούν κέρδη χωρίς έσοδα/έξοδα.")
+
+            # ---- Monthly Profit per Year ----
+            st.subheader("Κέρδη ανά μήνα (ανά έτος)")
+            rev_my = fdf.dropna(subset=["price"]).groupby(["year","month"]) ["price"].sum().reset_index().rename(columns={"price":"rev"}) if not fdf.empty else pd.DataFrame(columns=["year","month","rev"]) 
+            exp_my = exp_fdf.groupby(["year","month"]) ["price"].sum().reset_index().rename(columns={"price":"exp"}) if not exp_fdf.empty else pd.DataFrame(columns=["year","month","exp"]) 
+            pm = pd.merge(rev_my, exp_my, on=["year","month"], how="outer").fillna(0)
+            if not pm.empty:
+                pm["month"] = pd.Categorical(pm["month"], categories=MONTHS, ordered=True)
+                pm = pm.sort_values(["year","month"]).copy()
+                pm["profit"] = pm["rev"] - pm["exp"]
+                # Facet by year for clarity
+                st.vega_lite_chart(
+                    pm,
+                    {
+                        "mark": "line",
+                        "encoding": {
+                            "x": {"field": "month", "type": "ordinal", "sort": MONTHS, "title": "Μήνας"},
+                            "y": {"field": "profit", "type": "quantitative", "title": "Κέρδη"},
+                            "color": {"field": "year", "type": "nominal", "title": "Έτος"}
+                        },
+                        "width": "container",
+                        "height": 260
+                    },
+                    use_container_width=True,
+                )
+                explain("Κέρδη ανά μήνα: βοηθά να δεις σε ποιους μήνες τα έξοδα ροκανίζουν περισσότερο τα έσοδα.")
+            else:
+                st.info("Δεν υπάρχουν δεδομένα για μηνιαία κέρδη.")
+
         st.subheader("Μεταβολή εσόδων ανά μήνα σε σχέση με πέρσι (YoY)")
         yoy_years = sorted(fdf["year"].dropna().astype(int).unique().tolist())
         if len(yoy_years) >= 2:
